@@ -62,4 +62,7 @@
     <string name="workspace_launch_failed">失败: %1$s</string>
     <string name="workspace_launch_cancel">取消</string>
     <string name="workspace_launch_dismiss">关闭</string>
+    <string name="biometric_screen_lock_icon">屏幕锁定</string>
+    <string name="desktop_screen_title">桌面</string>
+    <string name="agent_deny">拒绝</string>
 </resources>

@@ -32,6 +32,7 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import sh.haven.core.ffmpeg.AudioFilter
 import sh.haven.core.ffmpeg.FilterPresets
@@ -146,7 +147,7 @@ fun FilterSection(state: FilterState, isAudioOnly: Boolean = false, onFilterChan
         TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) {
             Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null)
             Spacer(Modifier.width(4.dp))
-            Text("Filters")
+            Text(stringResource(R.string.sftp_filter_title))
             if (state.hasFilters()) {
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -165,7 +166,7 @@ fun FilterSection(state: FilterState, isAudioOnly: Boolean = false, onFilterChan
                 .padding(horizontal = 4.dp),
         ) {
             // Quick presets
-            Text("Quick presets", style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.sftp_compression_quick_presets), style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(4.dp))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -324,7 +325,7 @@ private fun LabeledSlider(
 private fun RotationPicker(selected: Int, onSelect: (Int) -> Unit) {
     val options = listOf("None" to 0, "90\u00B0" to 1, "180\u00B0" to 2, "270\u00B0" to 3)
     Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-        Text("Rotation", style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(R.string.sftp_filter_rotation), style = MaterialTheme.typography.bodyMedium)
         Row(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.padding(top = 4.dp),

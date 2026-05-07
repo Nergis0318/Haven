@@ -214,4 +214,32 @@
     <string name="sftp_contact_sheet_rows">行数</string>
     <string name="sftp_contact_sheet_tile">瓦片大小：%1$d × %2$d</string>
     <string name="sftp_contact_sheet_action">生成拼图</string>
+
+    <!-- #135 third pass -->
+    <string name="sftp_attach_use_folder">使用此文件夹</string>
+    <string name="sftp_paste_discard">放弃</string>
+    <string name="sftp_paste_resume">继续</string>
+    <string name="sftp_paste_discard_title">放弃未完成的粘贴？</string>
+    <string name="sftp_paste_discard_body">队列中的待传输文件将被删除，此操作无法撤销。</string>
+    <string name="sftp_paste_keep">保留</string>
+    <string name="sftp_preview_frame_desc">预览帧 — 点按以全屏</string>
+        <string name="sftp_convert_container">容器</string>
+    <string name="sftp_convert_video_encoder">视频编码器</string>
+    <string name="sftp_convert_audio_encoder">音频编码器</string>
+    <string name="sftp_convert_save_to">保存到</string>
+    <string name="sftp_preview_stop">停止</string>
+    <string name="sftp_preview_preparing">准备中…</string>
+    <string name="sftp_preview_play5s">播放 5 秒预览</string>
+    <string name="sftp_fullscreen_preview">全屏预览</string>
+    <string name="sftp_conflict_title">文件已存在</string>
+    <string name="sftp_conflict_overwrite">覆盖</string>
+    <string name="sftp_conflict_keep_both">保留两者（重命名）</string>
+    <string name="sftp_conflict_skip">跳过</string>
+    <string name="sftp_compression_quick_presets">快速预设</string>
+    <string name="sftp_compression_resolution">分辨率</string>
+    <string name="sftp_compression_quality">画质（CRF %1$d）</string>
+    <string name="sftp_compression_speed">编码速度</string>
+    <string name="sftp_compression_audio_bitrate">音频码率</string>
+    <string name="sftp_filter_title">滤镜</string>
+    <string name="sftp_filter_rotation">旋转</string>
 </resources>

@@ -690,7 +690,7 @@ fun SftpScreen(
                                 },
                                 enabled = canConfirm,
                             ) {
-                                Text("Use this folder")
+                                Text(stringResource(R.string.sftp_attach_use_folder))
                             }
                         }
                     }
@@ -836,27 +836,27 @@ fun SftpScreen(
                             )
                         }
                         TextButton(onClick = { confirmDiscard = true }) {
-                            Text("Discard")
+                            Text(stringResource(R.string.sftp_paste_discard))
                         }
                         Spacer(Modifier.width(4.dp))
                         Button(onClick = { viewModel.resumePasteQueue() }) {
-                            Text("Resume")
+                            Text(stringResource(R.string.sftp_paste_resume))
                         }
                     }
                 }
                 if (confirmDiscard) {
                     AlertDialog(
                         onDismissRequest = { confirmDiscard = false },
-                        title = { Text("Discard unfinished paste?") },
-                        text = { Text("Pending files will be removed from the queue. This cannot be undone.") },
+                        title = { Text(stringResource(R.string.sftp_paste_discard_title)) },
+                        text = { Text(stringResource(R.string.sftp_paste_discard_body)) },
                         confirmButton = {
                             TextButton(onClick = {
                                 viewModel.discardPasteQueue()
                                 confirmDiscard = false
-                            }) { Text("Discard") }
+                            }) { Text(stringResource(R.string.sftp_paste_discard)) }
                         },
                         dismissButton = {
-                            TextButton(onClick = { confirmDiscard = false }) { Text("Keep") }
+                            TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(R.string.sftp_paste_keep)) }
                         },
                     )
                 }
@@ -1527,7 +1527,7 @@ fun SftpScreen(
                                     if (bitmap != null) {
                                         Image(
                                             bitmap = bitmap.asImageBitmap(),
-                                            contentDescription = "Preview frame — tap for fullscreen",
+                                            contentDescription = stringResource(R.string.sftp_preview_frame_desc),
                                             contentScale = ContentScale.Fit,
                                             modifier = Modifier
                                                 .fillMaxSize()
@@ -1594,7 +1594,7 @@ fun SftpScreen(
                         ) {
                             Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Preview")
+                            Text(stringResource(R.string.sftp_preview))
                         }
 
                         Spacer(Modifier.height(12.dp))
@@ -1603,7 +1603,7 @@ fun SftpScreen(
                     }
 
                     // Format selection — container + encoder dropdowns
-                    Text("Container", style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(R.string.sftp_convert_container), style = MaterialTheme.typography.labelMedium)
                     DropdownSelector(
                         options = containers,
                         selected = selectedContainer,
@@ -1612,7 +1612,7 @@ fun SftpScreen(
                     Spacer(Modifier.height(8.dp))
 
                     if (!isAudioOnly) {
-                        Text("Video encoder", style = MaterialTheme.typography.labelMedium)
+                        Text(stringResource(R.string.sftp_convert_video_encoder), style = MaterialTheme.typography.labelMedium)
                         DropdownSelector(
                             options = videoEncoders,
                             selected = selectedVideoEnc,
@@ -1621,7 +1621,7 @@ fun SftpScreen(
                         Spacer(Modifier.height(8.dp))
                     }
 
-                    Text("Audio encoder", style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(R.string.sftp_convert_audio_encoder), style = MaterialTheme.typography.labelMedium)
                     DropdownSelector(
                         options = audioEncoders,
                         selected = selectedAudioEnc,
@@ -1630,7 +1630,7 @@ fun SftpScreen(
                     Spacer(Modifier.height(12.dp))
 
                     // Output destination selector
-                    Text("Save to", style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(R.string.sftp_convert_save_to), style = MaterialTheme.typography.labelMedium)
                     val sourceFolderLabel = when {
                         viewModel.isLocalProfile() -> "Same folder as source"
                         isRclone -> "Back to cloud (same folder)"
@@ -1729,7 +1729,7 @@ fun SftpScreen(
                                     ) {
                                         Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Stop")
+                                        Text(stringResource(R.string.sftp_preview_stop))
                                     }
                                 }
                                 is SftpViewModel.AudioPreviewState.Generating -> {
@@ -1740,7 +1740,7 @@ fun SftpScreen(
                                     ) {
                                         CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Preparing...")
+                                        Text(stringResource(R.string.sftp_preview_preparing))
                                     }
                                 }
                                 else -> {
@@ -1756,7 +1756,7 @@ fun SftpScreen(
                                     ) {
                                         Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Play 5s preview")
+                                        Text(stringResource(R.string.sftp_preview_play5s))
                                     }
                                 }
                             }
@@ -1879,7 +1879,7 @@ fun SftpScreen(
                         ) {
                             Image(
                                 bitmap = fullBitmap.asImageBitmap(),
-                                contentDescription = "Fullscreen preview",
+                                contentDescription = stringResource(R.string.sftp_fullscreen_preview),
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -2699,7 +2699,7 @@ private fun PasteConflictDialog(prompt: ConflictPrompt) {
 
     AlertDialog(
         onDismissRequest = { prompt.onChoice(ConflictAction.SKIP, applyToAll) },
-        title = { Text("File already exists") },
+        title = { Text(stringResource(R.string.sftp_conflict_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("${prompt.fileName}", style = MaterialTheme.typography.titleSmall)
@@ -2735,17 +2735,17 @@ private fun PasteConflictDialog(prompt: ConflictPrompt) {
             Column(horizontalAlignment = Alignment.End) {
                 if (prompt.canResume) {
                     TextButton(onClick = { prompt.onChoice(ConflictAction.RESUME, applyToAll) }) {
-                        Text("Resume")
+                        Text(stringResource(R.string.sftp_paste_resume))
                     }
                 }
                 TextButton(onClick = { prompt.onChoice(ConflictAction.OVERWRITE, applyToAll) }) {
-                    Text("Overwrite")
+                    Text(stringResource(R.string.sftp_conflict_overwrite))
                 }
                 TextButton(onClick = { prompt.onChoice(ConflictAction.RENAME, applyToAll) }) {
-                    Text("Keep both (rename)")
+                    Text(stringResource(R.string.sftp_conflict_keep_both))
                 }
                 TextButton(onClick = { prompt.onChoice(ConflictAction.SKIP, applyToAll) }) {
-                    Text("Skip")
+                    Text(stringResource(R.string.sftp_conflict_skip))
                 }
             }
         },

@@ -39,7 +39,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import sh.haven.app.R
 import sh.haven.app.desktop.DesktopTab
 import sh.haven.app.desktop.DesktopViewModel
 import sh.haven.core.data.preferences.NavBlockMode
@@ -221,7 +223,7 @@ private fun DesktopEmptyState() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("Desktop", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.desktop_screen_title), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
         Text(
             "Connect via VNC or RDP from the Connections tab",
@@ -334,7 +336,7 @@ private fun DesktopTabBar(
                                 contentColor = MaterialTheme.colorScheme.error,
                             ),
                         ) {
-                            Text("Close")
+                            Text(stringResource(R.string.common_close))
                             Spacer(Modifier.width(4.dp))
                             Icon(Icons.Filled.Close, null, modifier = Modifier.size(18.dp))
                         }

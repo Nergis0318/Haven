@@ -32,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import sh.haven.core.data.preferences.ToolbarItem
@@ -71,14 +72,14 @@ fun SnippetsBottomSheet(
                     modifier = Modifier.weight(1f),
                 )
                 IconButton(onClick = { showAddDialog = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add snippet")
+                    Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.toolbar_snippet_add))
                 }
             }
 
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Search snippets...") },
+                placeholder = { Text(stringResource(R.string.toolbar_snippet_search)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -116,7 +117,7 @@ fun SnippetsBottomSheet(
                                 ) {
                                     Icon(
                                         Icons.Filled.Delete,
-                                        contentDescription = "Delete",
+                                        contentDescription = stringResource(R.string.toolbar_snippet_delete),
                                         modifier = Modifier.size(18.dp),
                                     )
                                 }
@@ -153,13 +154,13 @@ private fun AddSnippetDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add snippet") },
+        title = { Text(stringResource(R.string.toolbar_snippet_dialog_title)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
-                    label = { Text("Label") },
+                    label = { Text(stringResource(R.string.toolbar_snippet_label)) },
                     placeholder = { Text("e.g. Deploy, Restart") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -170,7 +171,7 @@ private fun AddSnippetDialog(
                 OutlinedTextField(
                     value = command,
                     onValueChange = { command = it },
-                    label = { Text("Command") },
+                    label = { Text(stringResource(R.string.toolbar_snippet_command)) },
                     placeholder = { Text("e.g. docker compose up -d\\n") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
@@ -193,11 +194,11 @@ private fun AddSnippetDialog(
                 },
                 enabled = label.isNotBlank() && command.isNotBlank(),
             ) {
-                Text("Add")
+                Text(stringResource(R.string.toolbar_custom_key_add))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.toolbar_custom_key_cancel)) }
         },
     )
 }

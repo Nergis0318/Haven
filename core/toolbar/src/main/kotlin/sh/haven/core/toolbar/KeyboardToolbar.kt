@@ -48,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -426,7 +427,7 @@ private fun AlignedToolbarContent(
                             )
                         }
                     } else {
-                        ToolbarIconButton(Icons.Filled.DesktopWindows, "VNC Desktop", onVncTap)
+                        ToolbarIconButton(Icons.Filled.DesktopWindows, stringResource(R.string.toolbar_vnc_desktop), onVncTap)
                     }
                 }
                 for (item in row2Left) {
@@ -633,7 +634,7 @@ private fun ToolbarRow(
                         )
                     }
                 } else {
-                    ToolbarIconButton(Icons.Filled.DesktopWindows, "VNC Desktop", onVncTap)
+                    ToolbarIconButton(Icons.Filled.DesktopWindows, stringResource(R.string.toolbar_vnc_desktop), onVncTap)
                 }
             }
         }
@@ -669,7 +670,7 @@ private fun AddKeyButton() {
     ) {
         Icon(
             Icons.Filled.Add,
-            contentDescription = "Add custom key",
+            contentDescription = stringResource(R.string.toolbar_add_custom_key),
             modifier = Modifier.size(16.dp),
         )
     }
@@ -710,7 +711,7 @@ private fun BuiltInKey(
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.Keyboard, contentDescription = "Toggle keyboard", modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.Keyboard, contentDescription = stringResource(R.string.toolbar_toggle_keyboard), modifier = Modifier.size(18.dp))
             }
         }
         ToolbarKey.ESC_KEY -> ToolbarTextButton("Esc") { cb.onSendBytes(KEY_ESC) }
@@ -1056,7 +1057,7 @@ private fun ReorderEditButton() {
     ) {
         Icon(
             Icons.Filled.Edit,
-            contentDescription = "Reorder toolbar keys",
+            contentDescription = stringResource(R.string.toolbar_reorder_keys),
             modifier = Modifier.size(16.dp),
         )
     }
@@ -1191,7 +1192,7 @@ private fun ReorderToolbarContent(
                     if (showVncIcon) {
                         Icon(
                             Icons.Filled.DesktopWindows,
-                            contentDescription = "VNC Desktop",
+                            contentDescription = stringResource(R.string.toolbar_vnc_desktop),
                             modifier = Modifier
                                 .size(32.dp)
                                 .padding(7.dp),
@@ -1281,7 +1282,7 @@ private fun ReorderToolbarContent(
             ) {
                 Icon(
                     Icons.Filled.Add,
-                    contentDescription = "Add custom key",
+                    contentDescription = stringResource(R.string.toolbar_add_custom_key),
                     modifier = Modifier.size(18.dp),
                 )
             }
@@ -1296,7 +1297,7 @@ private fun ReorderToolbarContent(
             ) {
                 Icon(
                     Icons.Filled.Settings,
-                    contentDescription = "Toolbar settings",
+                    contentDescription = stringResource(R.string.toolbar_settings),
                     modifier = Modifier.size(18.dp),
                 )
             }
@@ -1440,7 +1441,7 @@ private fun DraggableSegment(
                 ) {
                     Icon(
                         Icons.Filled.Check,
-                        contentDescription = "Done reordering",
+                        contentDescription = stringResource(R.string.toolbar_done_reordering),
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.primary,
                     )
@@ -1640,7 +1641,7 @@ private fun ReorderableToolbarRow(
                     ) {
                         Icon(
                             Icons.Filled.Check,
-                            contentDescription = "Done reordering",
+                            contentDescription = stringResource(R.string.toolbar_done_reordering),
                             modifier = Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.primary,
                         )
@@ -1852,7 +1853,7 @@ private fun AddCustomKeyDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add custom key") },
+        title = { Text(stringResource(R.string.toolbar_custom_key_dialog_title)) },
         text = {
             Column {
                 ExposedDropdownMenuBox(
@@ -1893,7 +1894,7 @@ private fun AddCustomKeyDialog(
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
-                    label = { Text("Label") },
+                    label = { Text(stringResource(R.string.toolbar_custom_key_label)) },
                     placeholder = { Text("e.g. ^C, Paste") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -1904,7 +1905,7 @@ private fun AddCustomKeyDialog(
                 OutlinedTextField(
                     value = sendText,
                     onValueChange = { sendText = it },
-                    label = { Text("Sequence") },
+                    label = { Text(stringResource(R.string.toolbar_custom_key_sequence)) },
                     placeholder = { Text("e.g. \\u0003") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -1926,11 +1927,11 @@ private fun AddCustomKeyDialog(
                 },
                 enabled = label.isNotBlank() && sendText.isNotBlank(),
             ) {
-                Text("Add")
+                Text(stringResource(R.string.toolbar_custom_key_add))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.toolbar_custom_key_cancel)) }
         },
     )
 }

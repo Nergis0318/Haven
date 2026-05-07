@@ -71,4 +71,7 @@
     <string name="terminal_disconnect_countdown">Getrennt — schließt in %1$ds</string>
     <string name="terminal_disconnect_now">Getrennt — wird geschlossen</string>
     <string name="terminal_new_session_create">Erstellen</string>
+    <string name="terminal_vnc_username_label">Username (optional — VeNCrypt only)</string>
+    <string name="terminal_vnc_username_placeholder">Leave blank for classic VncAuth</string>
+    <string name="terminal_vnc_color_depth">Colour depth</string>
 </resources>

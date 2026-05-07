@@ -217,7 +217,7 @@
     <string name="connections_action_reauthenticate">Re-authenticate</string>
     <string name="connections_action_cancel_oauth">Cancel OAuth</string>
 
-    <string name="connections_hostkey_verify_hint">Verify this fingerprint matches the server&apos;s key before trusting.</string>
+    <string name="connections_hostkey_verify_hint">Verify this fingerprint matches the server\'s key before trusting.</string>
     <string name="connections_hostkey_changed_title">Host Key Changed</string>
     <string name="connections_hostkey_changed_body">The host key for %1$s has changed. This could indicate a server reinstall or a man-in-the-middle attack.</string>
     <string name="connections_password_field_passphrase">Key passphrase</string>
@@ -234,7 +234,7 @@
     <string name="connections_fido_touch_usb_title">Touch your security key</string>
     <string name="connections_fido_touch_usb_body">Press the button on your security key now to authorise the SSH signature. The key may blink to indicate it is waiting.</string>
     <string name="connections_fido_touch_nfc_title">Hold your security key</string>
-    <string name="connections_fido_touch_nfc_body">Keep the security key against the back of the device for two seconds while it signs. Moving it away early aborts the exchange and you&apos;ll need to tap it again.</string>
+    <string name="connections_fido_touch_nfc_body">Keep the security key against the back of the device for two seconds while it signs. Moving it away early aborts the exchange and you\'ll need to tap it again.</string>
     <string name="connections_fido_cancel_hint">Cancel by disconnecting from the connections list.</string>
     <string name="connections_ki_response_fallback">Response</string>
     <string name="connections_ki_title_additional">Additional authentication required</string>
@@ -245,9 +245,9 @@
     <string name="connections_vm_hide_steps">Hide setup steps</string>
     <string name="connections_vm_step_start_body">Open the Android Terminal app to boot the VM.</string>
     <string name="connections_vm_step_open_port_body">In the Terminal app settings, add port 8022 to the listening ports list.</string>
-    <string name="connections_vm_step_password_body">Run in the Terminal app. You&apos;ll be prompted to set a password for the droid user.</string>
+    <string name="connections_vm_step_password_body">Run in the Terminal app. You\'ll be prompted to set a password for the droid user.</string>
     <string name="connections_vm_step_password_hint">Then connect with: droid@localhost:8022</string>
-    <string name="connections_vm_step_vnc_body">For remote desktop access via Haven&apos;s Desktop tab.</string>
+    <string name="connections_vm_step_vnc_body">For remote desktop access via Haven\'s Desktop tab.</string>
     <string name="connections_vm_step_desktop_body">Xfce4 is lightweight and works well over VNC.</string>
     <string name="connections_vm_step_apps_body">File manager, text editor, image viewer, browser, calculator.</string>
 </resources>

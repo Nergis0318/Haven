@@ -1333,8 +1333,8 @@ private fun VncSettingsDialog(
                 OutlinedTextField(
                     value = username,
                     onValueChange = { username = it },
-                    label = { Text("Username (optional — VeNCrypt only)") },
-                    placeholder = { Text("Leave blank for classic VncAuth") },
+                    label = { Text(stringResource(R.string.terminal_vnc_username_label)) },
+                    placeholder = { Text(stringResource(R.string.terminal_vnc_username_placeholder)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1370,7 +1370,7 @@ private fun VncSettingsDialog(
                         value = selectedDepth.second,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Colour depth") },
+                        label = { Text(stringResource(R.string.terminal_vnc_color_depth)) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(depthExpanded) },
                         modifier = Modifier
                             .fillMaxWidth()

@@ -249,6 +249,20 @@ fun HavenNavHost(
     var desktopFullscreen by remember { mutableStateOf(false) }
     // Terminal fullscreen — same chrome behaviour, owned by TerminalScreen (#138)
     var terminalFullscreen by remember { mutableStateOf(false) }
+    // Exit a tab's fullscreen mode when the pager settles on a different
+    // tab. Without this, switching from a fullscreen Terminal/Desktop to
+    // (e.g.) Keys leaves `terminalFullscreen = true`, which disables
+    // pager swipe (line 277) and strands the user — they'd swiped here
+    // but can no longer swipe back. Reported by maintainer 2026-05-07.
+    LaunchedEffect(pagerState.settledPage) {
+        val settled = screens.getOrNull(pagerState.settledPage)
+        if (settled != Screen.Terminal && terminalFullscreen) {
+            terminalFullscreen = false
+        }
+        if (settled != Screen.Desktop && desktopFullscreen) {
+            desktopFullscreen = false
+        }
+    }
     // Disable pager swipe when VNC/RDP is connected (pinch-to-zoom conflicts)
     var desktopConnected by remember { mutableStateOf(false) }
     // Disable pager swipe when SFTP text editor or image tools are open

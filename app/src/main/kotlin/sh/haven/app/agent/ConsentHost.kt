@@ -22,6 +22,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import sh.haven.app.R
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -131,13 +133,13 @@ internal fun ConsentHost(viewModel: ConsentHostViewModel = hiltViewModel()) {
                 horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
             ) {
                 OutlinedButton(onClick = { resolve(ConsentDecision.DENY) }) {
-                    Text("Deny")
+                    Text(stringResource(R.string.agent_deny))
                 }
                 Button(
                     onClick = { resolve(ConsentDecision.ALLOW) },
                     colors = ButtonDefaults.buttonColors(),
                 ) {
-                    Text("Allow")
+                    Text(stringResource(R.string.common_allow))
                 }
             }
             Spacer(Modifier.height(16.dp))

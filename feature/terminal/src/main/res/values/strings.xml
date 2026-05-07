@@ -74,4 +74,7 @@
     <string name="terminal_rename">Rename</string>
     <string name="terminal_enter_fullscreen">Enter fullscreen</string>
     <string name="terminal_exit_fullscreen">Exit fullscreen</string>
+    <string name="terminal_vnc_username_label">Username (optional — VeNCrypt only)</string>
+    <string name="terminal_vnc_username_placeholder">Leave blank for classic VncAuth</string>
+    <string name="terminal_vnc_color_depth">Colour depth</string>
 </resources>

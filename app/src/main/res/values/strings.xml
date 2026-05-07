@@ -66,4 +66,7 @@
     <string name="workspace_launch_failed">Failed: %1$s</string>
     <string name="workspace_launch_cancel">Cancel</string>
     <string name="workspace_launch_dismiss">Dismiss</string>
+    <string name="biometric_screen_lock_icon">Screen lock</string>
+    <string name="desktop_screen_title">Desktop</string>
+    <string name="agent_deny">Deny</string>
 </resources>

@@ -35,6 +35,7 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 
 /**
@@ -241,7 +242,7 @@ private fun QuickPresetRow(
         Triple("Archive 1080p", Triple(22, "slow", 1080), "High quality; slower encode"),
         Triple("HQ source", Triple(18, "slow", null), "Visually lossless; largest output"),
     )
-    Text("Quick presets", style = MaterialTheme.typography.labelSmall,
+    Text(stringResource(R.string.sftp_compression_quick_presets), style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
     Row(
         modifier = Modifier
@@ -279,7 +280,7 @@ private fun ResolutionDropdown(
     var expanded by remember { mutableStateOf(false) }
     val label = options.firstOrNull { it.first == value }?.second ?: "Custom"
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text("Resolution", style = MaterialTheme.typography.labelMedium)
+        Text(stringResource(R.string.sftp_compression_resolution), style = MaterialTheme.typography.labelMedium)
         TextButton(
             onClick = { expanded = true },
             modifier = Modifier.fillMaxWidth(),
@@ -314,7 +315,7 @@ private fun CrfSlider(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text("Quality (CRF $value)", style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.sftp_compression_quality, value), style = MaterialTheme.typography.labelMedium)
             Text(
                 "Lower = better quality, larger file",
                 style = MaterialTheme.typography.bodySmall,
@@ -343,7 +344,7 @@ private fun PresetDropdown(
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Encode speed", style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.sftp_compression_speed), style = MaterialTheme.typography.labelMedium)
                 Text(
                     "Slower = smaller file at same quality",
                     style = MaterialTheme.typography.bodySmall,
@@ -385,7 +386,7 @@ private fun AudioBitrateDropdown(
     var expanded by remember { mutableStateOf(false) }
     val label = options.firstOrNull { it.first == value }?.second ?: value ?: "Use encoder default"
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text("Audio bitrate", style = MaterialTheme.typography.labelMedium)
+        Text(stringResource(R.string.sftp_compression_audio_bitrate), style = MaterialTheme.typography.labelMedium)
         TextButton(
             onClick = { expanded = true },
             modifier = Modifier.fillMaxWidth(),

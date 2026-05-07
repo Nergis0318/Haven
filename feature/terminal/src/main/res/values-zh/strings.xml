@@ -71,4 +71,7 @@
     <string name="terminal_disconnect_countdown">已断开 — 将在 %1$ds 后关闭</string>
     <string name="terminal_disconnect_now">已断开 — 正在关闭</string>
     <string name="terminal_new_session_create">创建</string>
+    <string name="terminal_vnc_username_label">用户名（可选 — 仅 VeNCrypt）</string>
+    <string name="terminal_vnc_username_placeholder">留空使用经典 VncAuth</string>
+    <string name="terminal_vnc_color_depth">色深</string>
 </resources>
