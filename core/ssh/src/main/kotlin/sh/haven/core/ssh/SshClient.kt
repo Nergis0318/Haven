@@ -104,11 +104,18 @@ class SshClient : Closeable {
                 val skData = SkKeyData.deserialize(auth.skKeyData)
                 Log.d(TAG, "FIDO2 SK key: alg=${skData.algorithmName}, app=${skData.application}")
                 val fidoIdentity = FidoIdentity(skData, fidoAuthenticator!!)
-                jsch.addIdentity(fidoIdentity, null)
+                val identity = if (auth.certBytes != null) {
+                    val certKeyType = SshCertificateParser.getCertKeyType(skData.algorithmName)
+                    Log.d(TAG, "FIDO2 SK key with certificate: certType=$certKeyType")
+                    CertificateWrappedIdentity(fidoIdentity, auth.certBytes, certKeyType)
+                } else fidoIdentity
+                jsch.addIdentity(identity, null)
                 val currentAlgs = sess.getConfig("PubkeyAcceptedAlgorithms") ?: ""
                 val skAlgs = "sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com"
+                val skCertAlgs = "sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"
+                val advertised = if (auth.certBytes != null) "$skCertAlgs,$skAlgs" else skAlgs
                 sess.setConfig("PubkeyAcceptedAlgorithms",
-                    if (currentAlgs.isNotEmpty()) "$skAlgs,$currentAlgs" else skAlgs)
+                    if (currentAlgs.isNotEmpty()) "$advertised,$currentAlgs" else advertised)
                 Log.d(TAG, "PubkeyAcceptedAlgorithms: ${sess.getConfig("PubkeyAcceptedAlgorithms")}")
             }
         }
@@ -262,11 +269,17 @@ class SshClient : Closeable {
                 val skData = SkKeyData.deserialize(auth.skKeyData)
                 Log.d(TAG, "FIDO2 SK key (reconnect): alg=${skData.algorithmName}")
                 val fidoIdentity = FidoIdentity(skData, fidoAuthenticator!!)
-                jsch.addIdentity(fidoIdentity, null)
+                val identity = if (auth.certBytes != null) {
+                    val certKeyType = SshCertificateParser.getCertKeyType(skData.algorithmName)
+                    CertificateWrappedIdentity(fidoIdentity, auth.certBytes, certKeyType)
+                } else fidoIdentity
+                jsch.addIdentity(identity, null)
                 val currentAlgs = sess.getConfig("PubkeyAcceptedAlgorithms") ?: ""
                 val skAlgs = "sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com"
+                val skCertAlgs = "sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"
+                val advertised = if (auth.certBytes != null) "$skCertAlgs,$skAlgs" else skAlgs
                 sess.setConfig("PubkeyAcceptedAlgorithms",
-                    if (currentAlgs.isNotEmpty()) "$skAlgs,$currentAlgs" else skAlgs)
+                    if (currentAlgs.isNotEmpty()) "$advertised,$currentAlgs" else advertised)
             }
         }
 

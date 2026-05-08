@@ -35,6 +35,7 @@ import sh.haven.core.security.KeystoreEntry
 import sh.haven.core.security.KeystoreFlag
 import sh.haven.core.security.KeystoreStore
 import sh.haven.core.security.SshKeyGenerator
+import sh.haven.core.ssh.SshCertificateParser
 import sh.haven.core.ssh.SshKeyExporter
 import sh.haven.core.ssh.SshKeyImporter
 import sh.haven.core.stepca.StepCaSignFlow
@@ -475,10 +476,16 @@ class KeysViewModel @Inject constructor(
 
     /**
      * Read the certificate file the user picked and attach it to the
-     * pending key. Lightweight validation: the file must start with
-     * one of the OpenSSH cert key-type prefixes
-     * (e.g. `ssh-ed25519-cert-v01@openssh.com`); otherwise we fail
-     * loudly so the user knows they picked the wrong file.
+     * pending key. Validation happens at attach time via [SshCertificateParser]:
+     *   - parser rejects anything that isn't a valid `-cert.pub` blob
+     *   - the cert's embedded public key fingerprint must match the
+     *     target key's [SshKey.fingerprintSha256] — catches the "picked
+     *     the wrong cert for this key" mistake here rather than at
+     *     connect time, where the failure surface is opaque
+     *   - expired certs still attach but with a warning (the user may
+     *     be prepping for a renewal that hasn't run yet)
+     * On success, the principals list is surfaced so the user can
+     * confirm the cert lets them log in as the expected role.
      */
     fun importCertificateFromUri(context: Context, keyId: String, uri: Uri) {
         viewModelScope.launch {
@@ -486,43 +493,34 @@ class KeysViewModel @Inject constructor(
                 val bytes = withContext(Dispatchers.IO) {
                     context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 } ?: throw IllegalStateException("Could not read certificate file")
-                if (!looksLikeOpenSshCertificate(bytes)) {
+                val certInfo = SshCertificateParser.parse(bytes)
+                if (certInfo == null) {
                     _error.value = "File doesn't look like an OpenSSH certificate (id_xxx-cert.pub)"
                     return@launch
                 }
-                repository.setCertificateBytes(keyId, bytes)
+                val key = repository.getById(keyId)
+                if (key == null) {
+                    _error.value = "Key not found"
+                    return@launch
+                }
+                if (!SshCertificateParser.matchesKey(certInfo, key.fingerprintSha256)) {
+                    _error.value = "Certificate does not match this key"
+                    return@launch
+                }
+                repository.setCertificateBytes(keyId, certInfo.rawBlob)
                 refreshTicker.value = System.nanoTime()
-                _message.value = "Certificate attached"
+                _message.value = if (!SshCertificateParser.isCurrentlyValid(certInfo)) {
+                    "Certificate attached (warning: outside its validity window)"
+                } else if (certInfo.validPrincipals.isNotEmpty()) {
+                    "Certificate attached (principals: ${certInfo.validPrincipals.joinToString()})"
+                } else {
+                    "Certificate attached"
+                }
             } catch (e: Exception) {
                 Log.e("KeysViewModel", "Attach certificate failed", e)
                 _error.value = "Attach failed: ${e.message}"
             }
         }
-    }
-
-    /**
-     * Header-prefix check for an OpenSSH certificate `.pub` file.
-     * Files start with the cert key type followed by a space, e.g.
-     * `ssh-ed25519-cert-v01@openssh.com AAAAB3...`. Tolerates leading
-     * whitespace and works on the first ~80 bytes; we don't fully parse.
-     */
-    private fun looksLikeOpenSshCertificate(bytes: ByteArray): Boolean {
-        if (bytes.isEmpty()) return false
-        val head = bytes.copyOf(minOf(bytes.size, 80)).toString(Charsets.US_ASCII).trimStart()
-        return CERT_KEY_TYPE_PREFIXES.any { head.startsWith("$it ") }
-    }
-
-    private companion object {
-        val CERT_KEY_TYPE_PREFIXES = listOf(
-            "ssh-rsa-cert-v01@openssh.com",
-            "ssh-dss-cert-v01@openssh.com",
-            "ecdsa-sha2-nistp256-cert-v01@openssh.com",
-            "ecdsa-sha2-nistp384-cert-v01@openssh.com",
-            "ecdsa-sha2-nistp521-cert-v01@openssh.com",
-            "ssh-ed25519-cert-v01@openssh.com",
-            "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
-            "sk-ssh-ed25519-cert-v01@openssh.com",
-        )
     }
 
     fun removeCertificate(keyId: String) {

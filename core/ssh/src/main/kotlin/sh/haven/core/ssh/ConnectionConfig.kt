@@ -75,14 +75,30 @@ data class ConnectionConfig(
                     (certificateBytes?.contentHashCode() ?: 0)
         }
         data class PrivateKeys(val keys: List<Pair<String, ByteArray>>) : AuthMethod
-        /** FIDO2 SK key — signing delegated to hardware security key. */
-        data class FidoKey(val skKeyData: ByteArray) : AuthMethod {
+        /**
+         * FIDO2 SK key — signing delegated to hardware security key.
+         * Optional [certBytes] (raw `id_xxx-cert.pub` content) pairs the
+         * hardware-resident key with a CA-issued certificate so servers
+         * with `TrustedUserCAKeys` accept the connection without the
+         * sk-pubkey itself appearing in `authorized_keys`. The cert path
+         * for sk-keys can't reuse JSch's `OpenSshCertificateAwareIdentityFile`
+         * (that wrapper assumes a software [com.jcraft.jsch.IdentityFile]);
+         * [SshClient] wraps the live [FidoIdentity] in
+         * [CertificateWrappedIdentity] instead.
+         */
+        data class FidoKey(
+            val skKeyData: ByteArray,
+            val certBytes: ByteArray? = null,
+        ) : AuthMethod {
             override fun equals(other: Any?): Boolean {
                 if (this === other) return true
                 if (other !is FidoKey) return false
-                return skKeyData.contentEquals(other.skKeyData)
+                return skKeyData.contentEquals(other.skKeyData) &&
+                    (certBytes?.contentEquals(other.certBytes ?: byteArrayOf())
+                        ?: (other.certBytes == null))
             }
-            override fun hashCode(): Int = skKeyData.contentHashCode()
+            override fun hashCode(): Int =
+                skKeyData.contentHashCode() * 31 + (certBytes?.contentHashCode() ?: 0)
         }
     }
 

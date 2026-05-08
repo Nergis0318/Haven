@@ -2551,18 +2551,21 @@ class ConnectionsViewModel @Inject constructor(
                 sshKeyRepository.getDecryptedKeyBytes(keyId)
             } else null
             if (keyBytes != null && key != null) {
+                // Cert is public material so the same fetch works for
+                // both software and FIDO2 paths; null = plain pubkey auth.
+                val certBytes = sshKeyRepository.getCertificateBytes(keyId)
                 // FIDO2 SK keys use hardware signing, not PEM key material
                 if (key.keyType.startsWith("sk-")) {
-                    Log.d(TAG, "Using FIDO2 SK key: ${key.keyType}")
-                    return ConnectionConfig.AuthMethod.FidoKey(skKeyData = keyBytes)
+                    Log.d(TAG, "Using FIDO2 SK key: ${key.keyType}" +
+                        if (certBytes != null) " (with certificate)" else "")
+                    return ConnectionConfig.AuthMethod.FidoKey(
+                        skKeyData = keyBytes,
+                        certBytes = certBytes,
+                    )
                 }
                 // For encrypted keys, pass the original encrypted bytes + passphrase.
                 // JSch decrypts at auth time — key never stored in plaintext.
                 val passphrase = if (key.isEncrypted) password.toCharArray() else CharArray(0)
-                // Attach the OpenSSH certificate when present (#133): pulled
-                // separately from the metadata fetch since the cert is public
-                // and not gated by biometric. Null = plain pubkey auth.
-                val certBytes = sshKeyRepository.getCertificateBytes(keyId)
                 return ConnectionConfig.AuthMethod.PrivateKey(
                     keyBytes = if (key.isEncrypted) keyBytes else rawKeyToPem(keyBytes, key.keyType),
                     passphrase = passphrase,
