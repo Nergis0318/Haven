@@ -274,6 +274,25 @@ internal class McpTools(
             consentLevel = ConsentLevel.NEVER,
         ) { args -> navigateSftpBrowser(args) },
 
+        "open_file_in_editor" to ToolHandler(
+            description = "Open a text file in Haven's built-in editor (TextMate-syntax-highlighted, with Save). Routes to the SFTP/Files tab and loads the file from the given profile's backend (SSH, SMB, rclone, or the literal \"local\" for the device filesystem). The file is read on demand by the active backend; binary files render as garbled UTF-8 — use this for source code, config, logs, etc.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("profileId", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Connection profile ID (or the literal string \"local\" for the device filesystem). Use list_connections to find IDs.")
+                    })
+                    put("path", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Absolute path to the file to open. POSIX absolute for SSH/Local, share-relative for SMB, remote-relative for rclone.")
+                    })
+                })
+                put("required", JSONArray().put("profileId").put("path"))
+            },
+            consentLevel = ConsentLevel.NEVER,
+        ) { args -> openFileInEditor(args) },
+
         "read_terminal_scrollback" to ToolHandler(
             description = "Return the most recent bytes of raw SSH stdout for an active terminal session, exactly as the user sees them (ANSI escapes, OSC markers, control bytes preserved). Use list_sessions to discover sessionIds. The buffer is capped at 256 KiB per session and rolls older bytes off; the human terminal still keeps its own visual scrollback separately.",
             inputSchema = JSONObject().apply {
@@ -938,6 +957,29 @@ internal class McpTools(
         return JSONObject().apply {
             put("delivered", delivered)
             put("sessionId", sessionId)
+        }
+    }
+
+    private suspend fun openFileInEditor(args: JSONObject): JSONObject {
+        val profileId = args.optString("profileId").ifEmpty {
+            throw McpError(-32602, "Missing required argument: profileId")
+        }
+        val path = args.optString("path").ifEmpty {
+            throw McpError(-32602, "Missing required argument: path")
+        }
+        if (profileId != "local") {
+            connectionRepository.getById(profileId)
+                ?: throw McpError(-32602, "Unknown profileId: $profileId")
+        }
+        val command = sh.haven.core.data.agent.AgentUiCommand.OpenInEditor(
+            profileId = profileId,
+            path = path,
+        )
+        val delivered = agentUiCommandBus.emit(command)
+        return JSONObject().apply {
+            put("delivered", delivered)
+            put("profileId", profileId)
+            put("path", path)
         }
     }
 

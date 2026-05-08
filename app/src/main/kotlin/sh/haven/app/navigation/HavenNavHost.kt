@@ -165,6 +165,8 @@ fun HavenNavHost(
                     sh.haven.core.ui.navigation.Screen.Desktop.route
                 is sh.haven.core.data.agent.AgentUiCommand.RegenerateStepCaCert ->
                     sh.haven.core.ui.navigation.Screen.Keys.route
+                is sh.haven.core.data.agent.AgentUiCommand.OpenInEditor ->
+                    sh.haven.core.ui.navigation.Screen.Sftp.route
             }
             val target = screens.indexOfFirst { it.route == route }
             if (target >= 0) pagerState.animateScrollToPage(target)

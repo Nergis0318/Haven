@@ -119,4 +119,19 @@ sealed class AgentUiCommand {
     data class RegenerateStepCaCert(
         val keyId: String,
     ) : AgentUiCommand()
+
+    /**
+     * Open [path] (under [profileId]) in Haven's text editor. The
+     * collector switches the pager to the SFTP page; SftpViewModel
+     * selects the profile if needed, navigates to the parent directory,
+     * then calls `openInEditor` with a synthetic entry for [path].
+     *
+     * Tap-equivalent: same effect as the user navigating to the file's
+     * parent directory and tapping the file row's "Open in editor"
+     * action.
+     */
+    data class OpenInEditor(
+        val profileId: String,
+        val path: String,
+    ) : AgentUiCommand()
 }

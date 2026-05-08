@@ -232,6 +232,22 @@ class SftpViewModel @Inject constructor(
                             ),
                         )
                     }
+                    is sh.haven.core.data.agent.AgentUiCommand.OpenInEditor -> {
+                        if (_activeProfileId.value != command.profileId) {
+                            selectProfile(command.profileId)
+                        }
+                        val name = command.path.substringAfterLast('/')
+                            .ifEmpty { command.path }
+                        val entry = SftpEntry(
+                            name = name,
+                            path = command.path,
+                            isDirectory = false,
+                            size = 0L,
+                            modifiedTime = 0L,
+                            permissions = "",
+                        )
+                        openInEditor(entry)
+                    }
                     else -> Unit
                 }
             }
@@ -1121,7 +1137,7 @@ class SftpViewModel @Inject constructor(
                 null
             }
             if (regex != null) {
-                filtered = filtered.filter { it.isDirectory || regex.containsMatchIn(it.name) }
+                filtered = filtered.filter { regex.containsMatchIn(it.name) }
             }
         }
 
