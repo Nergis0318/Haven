@@ -1,7 +1,10 @@
 package sh.haven.core.tunnel
 
 import android.content.Context
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import sh.haven.core.data.db.entities.TunnelConfig
 import sh.haven.core.data.db.entities.TunnelConfigType
 import sh.haven.core.data.db.entities.typeEnum
@@ -10,10 +13,39 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private const val TAG = "TunnelManager"
+
+/**
+ * Constructs a live [Tunnel] from a stored [TunnelConfig]. Extracted
+ * behind an interface so tests can swap in fakes — production code goes
+ * through the native gomobile bridges, which can't be exercised from a
+ * JVM-only unit test without Robolectric.
+ */
+interface TunnelFactory {
+    fun create(config: TunnelConfig): Tunnel
+}
+
 /**
  * Resolves a [TunnelConfig] (stored by id on a connection profile) into a
- * usable [Tunnel]. Caches live tunnels so multiple profiles sharing the
- * same config reuse a single tunnel instance.
+ * usable [Tunnel] and reference-counts the result so multiple profiles
+ * sharing the same config share a single live tunnel handle.
+ *
+ * **Lifecycle:**
+ *  - [acquire] gets-or-creates the [Tunnel] for the given config and
+ *    records `profileId` as a dependent. Idempotent for the same
+ *    `(configId, profileId)` pair.
+ *  - [release] removes a dependent. The tunnel is torn down only when
+ *    its last dependent releases. Releasing a profile that never
+ *    acquired is a no-op.
+ *  - If a profile re-acquires with a *different* config without
+ *    releasing first, the prior slot is auto-released. Useful for the
+ *    edge case of a user editing `tunnelConfigId` on a live profile.
+ *
+ * **Why this matters:** WireGuard handshakes take 1–2 s and Tailscale's
+ * tsnet startup blocks up to 30 s. Without refcounting, a transport
+ * tearing down its connection would close the handle out from under any
+ * sibling transport sharing the same config (e.g. SSH + VNC in a
+ * workspace profile both routed through one WireGuard tunnel).
  *
  * Dispatches by [TunnelConfigType.type]:
  *  - [TunnelConfigType.WIREGUARD] → [WireguardTunnel] (wireguard-go +
@@ -25,44 +57,85 @@ import javax.inject.Singleton
  * time a given config is started and reused on subsequent starts so the
  * authkey is only consumed once.
  */
-/**
- * Constructs a live [Tunnel] from a stored [TunnelConfig]. Extracted
- * behind an interface so tests can swap in fakes — production code goes
- * through the native gomobile bridges, which can't be exercised from a
- * JVM-only unit test without Robolectric.
- */
-interface TunnelFactory {
-    fun create(config: TunnelConfig): Tunnel
-}
-
 @Singleton
 class TunnelManager @Inject constructor(
     private val tunnelConfigRepository: TunnelConfigRepository,
     private val tunnelFactory: TunnelFactory,
 ) {
-
+    private val mutex = Mutex()
     private val liveTunnels = mutableMapOf<String, Tunnel>()
+    /** configId → set of profileIds currently depending on this tunnel. */
+    private val dependents = mutableMapOf<String, MutableSet<String>>()
+    /** profileId → the configId it last acquired. One tunnel per profile, mirroring the data model. */
+    private val acquiredBy = mutableMapOf<String, String>()
 
     /**
-     * Get or create a [Tunnel] for the config with the given id. Returns
-     * null if the config doesn't exist — callers should treat that as
-     * "profile referenced a deleted config, fall through to direct".
+     * Get-or-create the tunnel for [configId] and register [profileId] as
+     * a dependent. Returns null if the config was deleted from storage —
+     * callers should treat that as "fall through to direct dialling".
+     *
+     * Idempotent: re-acquiring with the same (configId, profileId) pair
+     * returns the same tunnel and leaves the dependent set unchanged.
+     *
+     * If [profileId] previously acquired a *different* config, that prior
+     * slot is auto-released first (and its tunnel torn down if it had no
+     * other dependents). Profiles only ever hold one tunnel at a time.
      */
-    suspend fun getTunnel(configId: String): Tunnel? {
-        liveTunnels[configId]?.let { return it }
-        val config = tunnelConfigRepository.getById(configId) ?: return null
-        val tunnel = tunnelFactory.create(config)
-        liveTunnels[configId] = tunnel
-        return tunnel
+    suspend fun acquire(configId: String, profileId: String): Tunnel? {
+        var staleToClose: Tunnel? = null
+        val acquired = mutex.withLock {
+            val previous = acquiredBy[profileId]
+            if (previous != null && previous != configId) {
+                Log.w(TAG, "Profile $profileId switching tunnel $previous → $configId without explicit release; auto-releasing prior")
+                staleToClose = internalRelease(previous, profileId)
+            }
+            val tunnel = liveTunnels[configId] ?: run {
+                val config = tunnelConfigRepository.getById(configId) ?: return@withLock null
+                tunnelFactory.create(config).also { liveTunnels[configId] = it }
+            }
+            dependents.getOrPut(configId) { mutableSetOf() }.add(profileId)
+            acquiredBy[profileId] = configId
+            tunnel
+        }
+        staleToClose?.close()
+        return acquired
     }
 
     /**
-     * Release a previously-acquired tunnel. With the current single-user
-     * model this closes immediately; reference-counting is a follow-up if
-     * we share tunnels across concurrent connections.
+     * Release whatever tunnel [profileId] currently holds. Tears down the
+     * underlying tunnel only if this was its last dependent. No-op if the
+     * profile has no live acquire.
+     *
+     * The actual tunnel close happens *outside* the manager's lock — close
+     * may make a native call (gomobile) and we don't want to hold the lock
+     * for that.
      */
-    fun release(configId: String) {
-        liveTunnels.remove(configId)?.close()
+    suspend fun release(profileId: String) {
+        val toClose = mutex.withLock {
+            val configId = acquiredBy[profileId] ?: return@withLock null
+            internalRelease(configId, profileId)
+        }
+        toClose?.close()
+    }
+
+    /**
+     * Caller must hold [mutex]. Returns the [Tunnel] that should be closed
+     * outside the lock if this drained the dependent set, or null otherwise.
+     */
+    private fun internalRelease(configId: String, profileId: String): Tunnel? {
+        acquiredBy.remove(profileId)
+        val deps = dependents[configId] ?: return null
+        deps.remove(profileId)
+        if (deps.isEmpty()) {
+            dependents.remove(configId)
+            return liveTunnels.remove(configId)
+        }
+        return null
+    }
+
+    /** Test / introspection — number of live dependents on the given config. */
+    suspend fun dependentCount(configId: String): Int = mutex.withLock {
+        dependents[configId]?.size ?: 0
     }
 }
 

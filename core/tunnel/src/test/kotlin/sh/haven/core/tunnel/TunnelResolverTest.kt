@@ -4,6 +4,7 @@ import com.jcraft.jsch.ProxyHTTP
 import com.jcraft.jsch.ProxySOCKS4
 import com.jcraft.jsch.ProxySOCKS5
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -29,7 +30,7 @@ class TunnelResolverTest {
     @Test
     fun dialReturnsNullWhenTunnelConfigDeleted() = runTest {
         val mgr = mockk<TunnelManager> {
-            coEvery { getTunnel("missing") } returns null
+            coEvery { acquire("missing", any()) } returns null
         }
         val resolver = TunnelResolver(mgr)
         assertNull(resolver.dial(profile(tunnelConfigId = "missing"), "h", 80, 30_000))
@@ -42,7 +43,7 @@ class TunnelResolverTest {
             every { dial("example.com", 443, 5_000) } returns conn
         }
         val mgr = mockk<TunnelManager> {
-            coEvery { getTunnel("tid") } returns tunnel
+            coEvery { acquire("tid", any()) } returns tunnel
         }
         val resolver = TunnelResolver(mgr)
 
@@ -61,7 +62,7 @@ class TunnelResolverTest {
     fun socketFactoryReturnsTunnelSocketFactoryWhenConfigPresent() = runTest {
         val tunnel = mockk<Tunnel>(relaxed = true)
         val mgr = mockk<TunnelManager> {
-            coEvery { getTunnel("tid") } returns tunnel
+            coEvery { acquire("tid", any()) } returns tunnel
         }
         val resolver = TunnelResolver(mgr)
 
@@ -84,7 +85,7 @@ class TunnelResolverTest {
     fun jschProxyReturnsTunnelProxyWhenConfigPresent() = runTest {
         val tunnel = mockk<Tunnel>(relaxed = true)
         val mgr = mockk<TunnelManager> {
-            coEvery { getTunnel("tid") } returns tunnel
+            coEvery { acquire("tid", any()) } returns tunnel
         }
         val resolver = TunnelResolver(mgr)
 
@@ -119,7 +120,7 @@ class TunnelResolverTest {
     fun jschProxyTunnelTakesPrecedenceOverSocks() = runTest {
         val tunnel = mockk<Tunnel>(relaxed = true)
         val mgr = mockk<TunnelManager> {
-            coEvery { getTunnel("tid") } returns tunnel
+            coEvery { acquire("tid", any()) } returns tunnel
         }
         val resolver = TunnelResolver(mgr)
         val p = profile(tunnelConfigId = "tid", proxyType = "SOCKS5", proxyHost = "127.0.0.1", proxyPort = 1080)
@@ -139,6 +140,16 @@ class TunnelResolverTest {
     fun jschProxyReturnsNullForUnknownProxyType() = runTest {
         val resolver = TunnelResolver(mockk(relaxed = true))
         assertNull(resolver.jschProxy(profile(proxyType = "WAT", proxyHost = "x", proxyPort = 1)))
+    }
+
+    @Test
+    fun releaseForwardsToManager() = runTest {
+        val mgr = mockk<TunnelManager>(relaxed = true)
+        val resolver = TunnelResolver(mgr)
+
+        resolver.release("profile-A")
+
+        coVerify { mgr.release("profile-A") }
     }
 
     private fun profile(

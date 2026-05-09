@@ -2813,6 +2813,11 @@ class ConnectionsViewModel @Inject constructor(
         // opened directly — e.g. a terminal that the VNC profile then
         // reused — are kept alive (#121, KoriKraut).
         sshSessionManager.releaseTunnelDependent(profileId)
+        // Drop the WireGuard / Tailscale refcount this profile may have
+        // acquired via TunnelResolver. No-op if the profile didn't go
+        // through a tunnel; otherwise the underlying tunnel closes only
+        // when its last dependent disconnects (#149).
+        viewModelScope.launch { tunnelResolver.release(profileId) }
         localSessionManager.desktopManager.stopAll()
         updateServiceNotification()
     }

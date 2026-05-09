@@ -86,8 +86,18 @@ class TunnelResolver @Inject constructor(
         }
     }
 
+    /**
+     * Release the tunnel acquired for [profileId]. Pair with any prior
+     * call that returned a non-null result from [dial], [socketFactory],
+     * or [jschProxy]. Idempotent — safe to call on disconnect even if
+     * the profile never acquired anything (e.g. direct connection).
+     */
+    suspend fun release(profileId: String) {
+        tunnelManager.release(profileId)
+    }
+
     private suspend fun tunnelFor(profile: ConnectionProfile): Tunnel? {
         val tunnelId = profile.tunnelConfigId ?: return null
-        return tunnelManager.getTunnel(tunnelId)
+        return tunnelManager.acquire(tunnelId, profile.id)
     }
 }
