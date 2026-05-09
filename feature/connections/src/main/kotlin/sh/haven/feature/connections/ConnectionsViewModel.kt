@@ -1593,6 +1593,7 @@ class ConnectionsViewModel @Inject constructor(
             try {
                 val configDir = File(appContext.filesDir, "reticulum").apply { mkdirs() }.absolutePath
 
+                val dialer = tunnelResolver.socketDialer(profile)
                 withContext(Dispatchers.IO) {
                     reticulumSessionManager.connectSession(
                         sessionId = sessionId,
@@ -1601,6 +1602,7 @@ class ConnectionsViewModel @Inject constructor(
                         port = profile.reticulumPort,
                         ifacNetname = profile.reticulumNetworkName,
                         ifacNetkey = profile.reticulumPassphrase,
+                        socketDialer = dialer,
                     )
                 }
 
@@ -3102,6 +3104,7 @@ class ConnectionsViewModel @Inject constructor(
 
         try {
             val configDir = File(appContext.filesDir, "reticulum").apply { mkdirs() }.absolutePath
+            val dialer = tunnelResolver.socketDialer(profile)
             withContext(Dispatchers.IO) {
                 reticulumSessionManager.connectSession(
                     sessionId = sessionId,
@@ -3110,6 +3113,7 @@ class ConnectionsViewModel @Inject constructor(
                     port = profile.reticulumPort,
                     ifacNetname = profile.reticulumNetworkName,
                     ifacNetkey = profile.reticulumPassphrase,
+                    socketDialer = dialer,
                 )
             }
             repository.markConnected(profile.id)

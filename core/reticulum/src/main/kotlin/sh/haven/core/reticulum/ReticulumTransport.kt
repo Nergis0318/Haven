@@ -22,6 +22,12 @@ interface ReticulumTransport {
      * @param port Shared-instance or gateway TCP port
      * @param ifacNetname IFAC network name for gateway isolation (optional)
      * @param ifacNetkey IFAC passphrase for gateway isolation (optional)
+     * @param socketDialer Optional `(host, port, timeoutMs) -> Socket`
+     *   used by the gateway TCP interface in place of a direct kernel
+     *   dial. Routes Reticulum's TCP transport through a userspace
+     *   tunnel (WireGuard / Tailscale) or SOCKS/HTTP proxy when the
+     *   connection profile selects one (#149). Ignored in shared-
+     *   instance mode where the local Sideband daemon owns the socket.
      * @return Haven's RNS identity hash (hex)
      */
     suspend fun init(
@@ -30,6 +36,7 @@ interface ReticulumTransport {
         port: Int = 37428,
         ifacNetname: String? = null,
         ifacNetkey: String? = null,
+        socketDialer: ((String, Int, Int) -> java.net.Socket)? = null,
     ): String
 
     /** Whether Reticulum has been initialised. */

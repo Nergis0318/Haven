@@ -94,4 +94,32 @@ class TunneledSocket(
     override fun shutdownOutput() {
         // No-op — userspace tunnels don't expose half-close.
     }
+
+    // TCP-level socket options below — userspace tunnels (WireGuard /
+    // Tailscale) handle their own buffering, keepalives, and shutdown
+    // semantics inside the netstack, so kernel-socket knobs have no
+    // backing implementation. We accept-and-ignore rather than throw,
+    // because callers like reticulum-kt's TCPClientInterface set these
+    // unconditionally on every dial.
+
+    override fun setTcpNoDelay(on: Boolean) { /* no-op */ }
+    override fun setKeepAlive(on: Boolean) { /* no-op */ }
+    override fun setSoTimeout(timeout: Int) { /* no-op */ }
+    override fun setSoLinger(on: Boolean, linger: Int) { /* no-op */ }
+    override fun setReuseAddress(on: Boolean) { /* no-op */ }
+    override fun setOOBInline(on: Boolean) { /* no-op */ }
+    override fun setReceiveBufferSize(size: Int) { /* no-op */ }
+    override fun setSendBufferSize(size: Int) { /* no-op */ }
+    override fun setTrafficClass(tc: Int) { /* no-op */ }
+
+    override fun getTcpNoDelay(): Boolean = false
+    override fun getKeepAlive(): Boolean = false
+    override fun getSoTimeout(): Int = 0
+    override fun getSoLinger(): Int = -1
+    override fun getReuseAddress(): Boolean = false
+    override fun getOOBInline(): Boolean = false
+
+    override fun getRemoteSocketAddress(): java.net.SocketAddress? {
+        return java.net.InetSocketAddress.createUnresolved(host, port)
+    }
 }

@@ -91,11 +91,38 @@ class TunnelResolver @Inject constructor(
     /**
      * Release the tunnel acquired for [profileId]. Pair with any prior
      * call that returned a non-null result from [dial], [socketFactory],
-     * or [jschProxy]. Idempotent — safe to call on disconnect even if
-     * the profile never acquired anything (e.g. direct connection).
+     * [socketDialer], or [jschProxy]. Idempotent — safe to call on
+     * disconnect even if the profile never acquired anything.
      */
     suspend fun release(profileId: String) {
         tunnelManager.release(profileId)
+    }
+
+    /**
+     * Returns a non-suspend dialer closure that the caller invokes once
+     * per TCP connection — useful for libraries that own their socket
+     * lifecycle and dial outside a coroutine context (reticulum-kt's
+     * `TCPClientInterface`, for example). The tunnel is acquired
+     * up-front; subsequent dials reuse the same handle.
+     *
+     * Returns null when the profile has neither a tunnel nor a proxy
+     * configured — caller falls through to its default `Socket()` dial.
+     */
+    suspend fun socketDialer(
+        profile: ConnectionProfile,
+    ): ((String, Int, Int) -> java.net.Socket)? {
+        tunnelFor(profile)?.let { tunnel ->
+            return { host, port, timeoutMs ->
+                val conn = tunnel.dial(host, port, timeoutMs)
+                TunneledSocket(conn, host, port)
+            }
+        }
+        proxySocketFactoryFor(profile)?.let { factory ->
+            return { host, port, _ ->
+                factory.createSocket(host, port)
+            }
+        }
+        return null
     }
 
     private suspend fun tunnelFor(profile: ConnectionProfile): Tunnel? {

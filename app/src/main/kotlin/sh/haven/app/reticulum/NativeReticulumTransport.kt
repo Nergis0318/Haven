@@ -81,6 +81,7 @@ class NativeReticulumTransport @Inject constructor() : ReticulumTransport {
         port: Int,
         ifacNetname: String?,
         ifacNetkey: String?,
+        socketDialer: ((String, Int, Int) -> java.net.Socket)?,
     ): String = withContext(Dispatchers.IO) {
         if (initialised) {
             return@withContext clientIdentity?.hexHash ?: "already-initialised"
@@ -111,6 +112,7 @@ class NativeReticulumTransport @Inject constructor() : ReticulumTransport {
                 targetPort = port,
                 ifacNetname = ifacNetname,
                 ifacNetkey = ifacNetkey,
+                socketDialer = socketDialer,
             )
             Reticulum.getInstance().addInterface(tcpClient)
             Transport.registerInterface(tcpClient.toRef())

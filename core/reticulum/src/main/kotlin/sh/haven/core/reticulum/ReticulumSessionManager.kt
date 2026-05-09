@@ -80,13 +80,14 @@ class ReticulumSessionManager @Inject constructor(
         port: Int,
         ifacNetname: String? = null,
         ifacNetkey: String? = null,
+        socketDialer: ((String, Int, Int) -> java.net.Socket)? = null,
     ) {
         val session = _sessions.value[sessionId]
             ?: throw IllegalStateException("Session $sessionId not found")
 
         // Init Reticulum (idempotent — safe to call multiple times)
-        Log.w(TAG, "initReticulum: host=$host port=$port ifac=${ifacNetname != null}")
-        val identityHash = transport.init(configDir, host, port, ifacNetname, ifacNetkey)
+        Log.w(TAG, "initReticulum: host=$host port=$port ifac=${ifacNetname != null} tunnel=${socketDialer != null}")
+        val identityHash = transport.init(configDir, host, port, ifacNetname, ifacNetkey, socketDialer)
         Log.w(TAG, "initReticulum OK, identity=$identityHash")
 
         // Open shell session (resolves destination + Link + handshake)
