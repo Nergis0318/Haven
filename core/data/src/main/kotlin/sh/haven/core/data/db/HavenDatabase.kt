@@ -32,7 +32,7 @@ import sh.haven.core.data.db.entities.WorkspaceProfile
         WorkspaceItem::class,
         StepCaConfig::class,
     ],
-    version = 49,
+    version = 50,
     exportSchema = true,
 )
 abstract class HavenDatabase : RoomDatabase() {
@@ -710,6 +710,55 @@ abstract class HavenDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE step_ca_configs ADD COLUMN sshHostCaPublicKey TEXT DEFAULT NULL",
                 )
+            }
+        }
+
+        /**
+         * #150 fix: the four new ConnectionProfile columns
+         * (autoReconnect, reconnectMaxAttempts, reconnectOnNetworkChange,
+         * tunnelOnly) were added to the entity in v5.31.0 without
+         * bumping the database version, so v5.30.0 → v5.31.0 upgrades
+         * crash with "Room cannot verify the data integrity" — the
+         * stored schema-49 hash (`724bf4a8…` from v5.30.0) no longer
+         * matches what the v5.31.0 entity-graph computes. Bumping to
+         * version 50 here lets Room run a real migration; the ALTERs
+         * are wrapped because devices that installed v5.31.0 fresh
+         * already have those columns from a from-scratch CREATE TABLE.
+         */
+        val MIGRATION_49_50 = object : Migration(49, 50) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(
+                    db, "connection_profiles", "autoReconnect",
+                    "INTEGER NOT NULL DEFAULT 1",
+                )
+                addColumnIfMissing(
+                    db, "connection_profiles", "reconnectMaxAttempts",
+                    "INTEGER NOT NULL DEFAULT 5",
+                )
+                addColumnIfMissing(
+                    db, "connection_profiles", "reconnectOnNetworkChange",
+                    "INTEGER NOT NULL DEFAULT 1",
+                )
+                addColumnIfMissing(
+                    db, "connection_profiles", "tunnelOnly",
+                    "INTEGER NOT NULL DEFAULT 0",
+                )
+            }
+        }
+
+        private fun addColumnIfMissing(
+            db: SupportSQLiteDatabase,
+            table: String,
+            column: String,
+            typeAndDefault: String,
+        ) {
+            val exists = db.query("PRAGMA table_info(`$table`)").use { c ->
+                val nameIdx = c.getColumnIndexOrThrow("name")
+                generateSequence { if (c.moveToNext()) c.getString(nameIdx) else null }
+                    .any { it == column }
+            }
+            if (!exists) {
+                db.execSQL("ALTER TABLE `$table` ADD COLUMN `$column` $typeAndDefault")
             }
         }
     }
