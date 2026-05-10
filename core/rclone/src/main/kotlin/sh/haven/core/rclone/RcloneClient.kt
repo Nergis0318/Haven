@@ -40,6 +40,20 @@ class RcloneClient @Inject constructor(
         initialized = false
     }
 
+    /**
+     * Route outgoing rclone HTTP traffic through [socksUrl]
+     * (e.g. `socks5://127.0.0.1:41234`) — typically the localhost SOCKS5
+     * listener of one of Haven's per-profile WireGuard / Tailscale
+     * tunnels (#149). Pass null to clear and route direct.
+     *
+     * Caveat: rclone caches HTTP clients per-fs, so this only reliably
+     * affects fs instances created AFTER the call. The per-profile
+     * connect path sets it before the first RPC for the profile.
+     */
+    fun setProxy(socksUrl: String?) {
+        RcloneBridge.setProxy(socksUrl)
+    }
+
     // ── Config operations ───────────────────────────────────────────────
 
     /** List all configured remote names. */

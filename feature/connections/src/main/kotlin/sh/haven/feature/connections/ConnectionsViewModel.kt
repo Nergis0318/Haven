@@ -1140,6 +1140,13 @@ class ConnectionsViewModel @Inject constructor(
             repository.markConnected(profile.id)
             try {
                 _connectingProfileId.value = profile.id
+                // Route rclone's HTTP traffic through the per-profile
+                // tunnel's SOCKS5 listener if one is configured (#149).
+                // Set BEFORE the first RPC for this remote — rclone
+                // caches HTTP clients per-fs, so a later swap wouldn't
+                // take effect.
+                val socksAddr = tunnelResolver.socksEndpoint(profile)
+                rcloneClient.setProxy(socksAddr?.let { "socks5://${it.hostString}:${it.port}" })
                 val sessionId = rcloneSessionManager.registerSession(profile.id, profile.label)
                 withContext(Dispatchers.IO) {
                     rcloneSessionManager.connectSession(sessionId, remoteName, provider)

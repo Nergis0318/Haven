@@ -42,6 +42,29 @@ type RbResult struct {
 	Output string
 }
 
+// RbSetProxy sets HTTPS_PROXY / HTTP_PROXY for the embedded rclone
+// process. rclone's HTTP transports honour these natively via Go's
+// http.ProxyFromEnvironment, which understands `socks5://host:port` and
+// `http://host:port` URLs.
+//
+// Pass empty string to clear both and route direct again.
+//
+// Used by Haven (#149) to pipe rclone's outgoing connections through
+// a per-profile WireGuard / Tailscale tunnel via the localhost SOCKS5
+// listener that wgbridge / tsbridge expose. Caveat: rclone caches HTTP
+// clients per-fs, so changing the proxy mid-session may not take
+// effect until a fresh fs is created. For the per-profile case the
+// Kotlin caller sets this before the first fs use, which is fresh.
+func RbSetProxy(proxyURL string) {
+	if proxyURL == "" {
+		os.Unsetenv("HTTPS_PROXY")
+		os.Unsetenv("HTTP_PROXY")
+	} else {
+		os.Setenv("HTTPS_PROXY", proxyURL)
+		os.Setenv("HTTP_PROXY", proxyURL)
+	}
+}
+
 // RbInitialize initialises the rclone library.
 //
 // configPath is the absolute path to the rclone config file.

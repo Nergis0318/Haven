@@ -40,6 +40,23 @@ object RcloneBridge {
     }
 
     /**
+     * Set HTTPS_PROXY / HTTP_PROXY for outgoing rclone HTTP traffic.
+     * Routes the embedded rclone process through the given proxy URL —
+     * typically `socks5://127.0.0.1:<port>` for one of Haven's per-tunnel
+     * SOCKS5 listeners (#149).
+     *
+     * Pass null or an empty string to clear both vars and route direct.
+     *
+     * Caveat: rclone caches HTTP clients per-fs, so changing the proxy
+     * mid-session may not take effect until a fresh fs is created. For
+     * the per-profile use case the caller sets this before the first
+     * RPC for the profile, which is fresh.
+     */
+    fun setProxy(proxyUrl: String?) {
+        Rcbridge.rbSetProxy(proxyUrl.orEmpty())
+    }
+
+    /**
      * Call an rclone RC method.
      *
      * @param method RC method name, e.g. "operations/list", "config/create"
