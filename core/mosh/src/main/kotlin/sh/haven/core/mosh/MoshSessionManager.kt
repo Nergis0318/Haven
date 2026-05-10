@@ -141,7 +141,17 @@ class MoshSessionManager @Inject constructor(
             moshKey = session.moshKey,
             onDataReceived = onDataReceived,
             onDisconnected = { _ ->
-                Log.d(TAG, "Session $sessionId disconnected")
+                // Mosh's UDP transport handles roaming internally — short
+                // network flips don't reach this callback, the transport
+                // re-syncs against the same (port, key). When this DOES
+                // fire it's because mosh-server died or the UDP path
+                // gave up after a long outage. App-level reconnect for
+                // that case needs SSH bootstrap re-execution (rerun
+                // mosh-server, parse MOSH CONNECT) which is non-trivial
+                // and isn't wired here yet — the per-profile
+                // autoReconnect flag from #150 has no effect on Mosh
+                // until that follow-up lands. Track in #150 phase notes.
+                Log.d(TAG, "Mosh session $sessionId disconnected — UDP roaming gave up; user must reconnect manually")
                 updateStatus(sessionId, SessionState.Status.DISCONNECTED)
             },
             verboseBuffer = session.verboseBuffer,

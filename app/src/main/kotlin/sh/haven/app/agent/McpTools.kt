@@ -687,6 +687,7 @@ internal class McpTools(
                     put("rdpPassword", JSONObject().apply { put("type", "string"); put("description", "Windows password (RDP).") })
                     put("rdpDomain", JSONObject().apply { put("type", "string"); put("description", "AD domain (RDP). Optional.") })
                     put("tunnelConfigId", JSONObject().apply { put("type", "string"); put("description", "Optional: route the new profile through this tunnel (from list_tunnels). Equivalent to follow-up set_profile_routing.") })
+                    put("tunnelOnly", JSONObject().apply { put("type", "boolean"); put("description", "SSH only: tunnel-only mode (#150). When true, the profile brings up the SSH transport and registers port forwards but does not open a terminal. Default false. Pair with auto_reconnect for autossh-style keepalive.") })
                 })
                 put("required", JSONArray().put("label").put("connectionType").put("host"))
             },
@@ -695,7 +696,8 @@ internal class McpTools(
                 val type = args.optString("connectionType")
                 val label = args.optString("label", "(unnamed)")
                 val host = args.optString("host", "?")
-                "Create $type profile \"$label\" → $host?"
+                val tunnelTag = if (args.optBoolean("tunnelOnly", false)) " [tunnel-only]" else ""
+                "Create $type profile \"$label\" → $host$tunnelTag?"
             },
         ) { args -> createConnection(args) },
 
@@ -825,6 +827,13 @@ internal class McpTools(
         if (!p.tunnelConfigId.isNullOrEmpty()) {
             put("tunnelConfigId", p.tunnelConfigId)
         }
+        // #150 — non-default reconnect / tunnel-only flags. Defaults
+        // (autoReconnect=true, max=5, networkChange=true, tunnelOnly=false)
+        // are omitted to keep the JSON terse for the common case.
+        if (!p.autoReconnect) put("autoReconnect", false)
+        if (p.reconnectMaxAttempts != 5) put("reconnectMaxAttempts", p.reconnectMaxAttempts)
+        if (!p.reconnectOnNetworkChange) put("reconnectOnNetworkChange", false)
+        if (p.tunnelOnly) put("tunnelOnly", true)
     }
 
     private fun listSessions(): JSONObject {
@@ -2020,6 +2029,10 @@ internal class McpTools(
         }
         val port = if (args.has("port")) args.optInt("port", defaultPort) else defaultPort
 
+        val tunnelOnly = args.optBoolean("tunnelOnly", false)
+        if (tunnelOnly && type != "SSH") {
+            throw IllegalArgumentException("tunnelOnly is only meaningful for SSH connections")
+        }
         val profile = when (type) {
             "SSH" -> ConnectionProfile(
                 label = label,
@@ -2029,6 +2042,7 @@ internal class McpTools(
                 sshPassword = password.ifBlank { null },
                 connectionType = "SSH",
                 tunnelConfigId = tunnelConfigId,
+                tunnelOnly = tunnelOnly,
             )
             "SMB" -> {
                 val share = args.optString("smbShare").ifBlank {
@@ -2087,6 +2101,7 @@ internal class McpTools(
             put("host", profile.host)
             put("port", profile.port)
             put("tunnelConfigId", profile.tunnelConfigId ?: JSONObject.NULL)
+            if (profile.tunnelOnly) put("tunnelOnly", true)
         }
     }
 
