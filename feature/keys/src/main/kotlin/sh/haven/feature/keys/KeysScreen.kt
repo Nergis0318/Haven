@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Password
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Refresh
@@ -172,6 +173,20 @@ fun KeysScreen(
         }
     }
 
+    // FIDO touch / PIN dialog during "Discover from security key" enumeration
+    val fidoPrompt by viewModel.fidoTouchPrompt.collectAsState()
+    fidoPrompt?.let { KeysFidoTouchPromptDialog(it) }
+
+    // Picker dialog after enumeration returns one-or-more credentials
+    val discovered by viewModel.discoveredCredentials.collectAsState()
+    if (discovered.isNotEmpty()) {
+        DiscoveredCredentialsPicker(
+            credentials = discovered,
+            onImport = { ids -> viewModel.importDiscoveredCredentials(ids) },
+            onDismiss = { viewModel.dismissDiscoveryPicker() },
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
@@ -302,6 +317,10 @@ fun KeysScreen(
                 showAddKeyDialog = false
                 filePickerLauncher.launch(arrayOf("*/*"))
             },
+            onDiscoverFromSecurityKey = {
+                showAddKeyDialog = false
+                viewModel.discoverFromSecurityKey()
+            },
             onPaste = {
                 showAddKeyDialog = false
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -362,6 +381,7 @@ private fun AddKeyChooser(
     onGenerate: () -> Unit,
     onGenerateStepCa: () -> Unit,
     onImport: () -> Unit,
+    onDiscoverFromSecurityKey: () -> Unit,
     onPaste: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -410,6 +430,16 @@ private fun AddKeyChooser(
                     supportingContent = { Text(stringResource(R.string.keys_import_file_formats)) },
                     leadingContent = {
                         Icon(Icons.Filled.FileUpload, contentDescription = null)
+                    },
+                )
+                ListItem(
+                    modifier = Modifier.clickable { onDiscoverFromSecurityKey() },
+                    headlineContent = { Text(stringResource(R.string.keys_discover_from_security_key)) },
+                    supportingContent = {
+                        Text(stringResource(R.string.keys_discover_from_security_key_hint))
+                    },
+                    leadingContent = {
+                        Icon(Icons.Filled.Usb, contentDescription = null)
                     },
                 )
                 ListItem(

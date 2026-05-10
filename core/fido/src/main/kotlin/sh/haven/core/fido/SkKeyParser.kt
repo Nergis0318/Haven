@@ -141,6 +141,94 @@ object SkKeyParser {
         return "SHA256:$b64"
     }
 
+    /**
+     * Build an [SkKeyData] from a CTAP `authenticatorCredentialManagement`
+     * `enumerateCredentials*` row plus the RP id it belongs to. Used by the
+     * "Discover from security key" import path so the user can add resident
+     * SSH-SK keys without ever generating a local stub file.
+     *
+     * The synthesised [SkKeyData.publicKeyBlob] follows the same OpenSSH
+     * SSH-wire format as a parsed stub file's blob — algorithm name +
+     * algorithm-specific fields + application. Downstream code (export,
+     * fingerprinting, host-side authorized_keys handling) treats both
+     * paths identically.
+     *
+     * [flags] defaults to `0x01` (user-presence bit), matching the SSH
+     * USER_PRESENCE_REQUIRED constant. Callers that know the credential
+     * was registered with verify-required should OR in `0x04`
+     * (user-verification) so [FidoAuthenticator.getAssertion] triggers
+     * the PIN/UV exchange when the key is used.
+     */
+    fun buildFromCtapCredential(
+        credential: Ctap2Cbor.CredentialEntry,
+        rpId: String,
+        flags: Byte = 0x01,
+    ): SkKeyData {
+        return when (val pk = credential.publicKey) {
+            is Ctap2Cbor.CosePublicKey.Ed25519 -> SkKeyData(
+                algorithmName = "sk-ssh-ed25519@openssh.com",
+                publicKeyBlob = buildEd25519SshPublicKeyBlob(pk.rawKey, rpId),
+                application = rpId,
+                credentialId = credential.credentialId,
+                flags = flags,
+            )
+            is Ctap2Cbor.CosePublicKey.EcdsaP256 -> SkKeyData(
+                algorithmName = "sk-ecdsa-sha2-nistp256@openssh.com",
+                publicKeyBlob = buildEcdsaSshPublicKeyBlob(pk.x, pk.y, rpId),
+                application = rpId,
+                credentialId = credential.credentialId,
+                flags = flags,
+            )
+        }
+    }
+
+    /**
+     * SSH wire format for sk-ssh-ed25519@openssh.com public key:
+     *   string  "sk-ssh-ed25519@openssh.com"
+     *   string  32-byte Ed25519 public key
+     *   string  application (e.g. "ssh:")
+     */
+    private fun buildEd25519SshPublicKeyBlob(rawKey: ByteArray, application: String): ByteArray {
+        require(rawKey.size == 32) { "Ed25519 public key must be 32 bytes, got ${rawKey.size}" }
+        val algorithm = "sk-ssh-ed25519@openssh.com".toByteArray()
+        val app = application.toByteArray()
+        val buf = ByteBuffer.allocate(4 + algorithm.size + 4 + rawKey.size + 4 + app.size)
+        buf.order(ByteOrder.BIG_ENDIAN)
+        buf.putInt(algorithm.size); buf.put(algorithm)
+        buf.putInt(rawKey.size); buf.put(rawKey)
+        buf.putInt(app.size); buf.put(app)
+        return buf.array()
+    }
+
+    /**
+     * SSH wire format for sk-ecdsa-sha2-nistp256@openssh.com public key:
+     *   string  "sk-ecdsa-sha2-nistp256@openssh.com"
+     *   string  "nistp256"
+     *   string  65-byte uncompressed EC point (0x04 || X || Y)
+     *   string  application
+     */
+    private fun buildEcdsaSshPublicKeyBlob(x: ByteArray, y: ByteArray, application: String): ByteArray {
+        require(x.size == 32 && y.size == 32) {
+            "ECDSA P-256 coords must be 32 bytes each, got x=${x.size} y=${y.size}"
+        }
+        val algorithm = "sk-ecdsa-sha2-nistp256@openssh.com".toByteArray()
+        val curve = "nistp256".toByteArray()
+        val ecPoint = ByteArray(1 + 32 + 32).apply {
+            this[0] = 0x04 // uncompressed
+            System.arraycopy(x, 0, this, 1, 32)
+            System.arraycopy(y, 0, this, 33, 32)
+        }
+        val app = application.toByteArray()
+        val total = 4 + algorithm.size + 4 + curve.size + 4 + ecPoint.size + 4 + app.size
+        val buf = ByteBuffer.allocate(total)
+        buf.order(ByteOrder.BIG_ENDIAN)
+        buf.putInt(algorithm.size); buf.put(algorithm)
+        buf.putInt(curve.size); buf.put(curve)
+        buf.putInt(ecPoint.size); buf.put(ecPoint)
+        buf.putInt(app.size); buf.put(app)
+        return buf.array()
+    }
+
     // Private section format for sk-ssh-ed25519@openssh.com:
     //   string  key_type ("sk-ssh-ed25519@openssh.com")  — already consumed
     //   string  public_key (32 bytes)

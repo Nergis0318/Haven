@@ -127,4 +127,24 @@
     <string name="stepca_discovering">Discovering…</string>
     <string name="stepca_import_from_file">Import from file</string>
     <string name="stepca_import_failed">Import failed: %1$s</string>
+
+    <!-- FIDO2 resident-key discovery (#152) -->
+    <string name="keys_discover_from_security_key">Discover from security key</string>
+    <string name="keys_discover_from_security_key_hint">Enumerate resident SSH-SK credentials from an inserted/tapped security key. Skips ssh-keygen -K.</string>
+    <string name="keys_discover_picker_title">Resident SSH keys</string>
+    <string name="keys_discover_picker_body">Pick which resident credentials to import. Each becomes a new SSH key entry; the security key itself still holds the private material.</string>
+    <string name="keys_discover_import_selected">Import selected</string>
+
+    <!-- FIDO2 touch / PIN dialog (mirrors connections_fido_* — used during discover) -->
+    <string name="keys_fido_pin_title">Security key PIN</string>
+    <string name="keys_fido_pin_label">PIN</string>
+    <string name="keys_fido_pin_help">Enter the PIN configured on your security key to continue.</string>
+    <string name="keys_fido_pin_wrong">Wrong PIN. %1$d attempts remaining before the key locks.</string>
+    <string name="keys_fido_waiting_title">Security key required</string>
+    <string name="keys_fido_waiting_body">Plug in your security key over USB, or tap it on the back of the device for NFC. Haven will continue automatically once it is detected.</string>
+    <string name="keys_fido_touch_usb_title">Touch your security key</string>
+    <string name="keys_fido_touch_usb_body">Press the button on your security key now to authorise the request.</string>
+    <string name="keys_fido_touch_nfc_title">Hold your security key</string>
+    <string name="keys_fido_touch_nfc_body">Keep the security key against the back of the device for two seconds. Moving it away early aborts the exchange.</string>
+    <string name="keys_fido_cancel_hint">Stays open until the security key responds.</string>
 </resources>

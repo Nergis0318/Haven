@@ -41,6 +41,19 @@ import sh.haven.core.ssh.SshKeyImporter
 import sh.haven.core.stepca.StepCaSignFlow
 import javax.inject.Inject
 
+/**
+ * One row in the discovery picker after [KeysViewModel.discoverFromSecurityKey]
+ * completes. Carries enough to render and identify each candidate, plus
+ * the underlying [SkKeyData] to persist on selection.
+ */
+data class DiscoveredSkCredential(
+    val id: String,
+    val rpId: String,
+    val algorithmName: String,
+    val fingerprint: String,
+    val data: SkKeyData,
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class KeysViewModel @Inject constructor(
@@ -49,6 +62,7 @@ class KeysViewModel @Inject constructor(
     private val keystore: Keystore,
     private val stepCaConfigRepository: StepCaConfigRepository,
     private val stepCaSignFlow: StepCaSignFlow,
+    private val fidoAuthenticator: sh.haven.core.fido.FidoAuthenticator,
     agentUiCommandBus: AgentUiCommandBus,
 ) : ViewModel() {
 
@@ -388,14 +402,7 @@ class KeysViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val skData = SkKeyParser.parse(fileBytes)
-                val entity = SshKey(
-                    label = "FIDO2: ${skData.application}",
-                    keyType = skData.algorithmName,
-                    privateKeyBytes = SkKeyData.serialize(skData),
-                    publicKeyOpenSsh = SkKeyParser.formatPublicKeyLine(skData),
-                    fingerprintSha256 = SkKeyParser.fingerprintSha256(skData.publicKeyBlob),
-                )
-                repository.save(entity)
+                saveSkKey(skData)
                 _message.value = "FIDO2 security key imported"
                 Log.d("KeysViewModel", "SK key imported: ${skData.algorithmName}, app=${skData.application}")
             } catch (e: Exception) {
@@ -403,6 +410,101 @@ class KeysViewModel @Inject constructor(
                 _error.value = "FIDO2 key import failed: ${e.message}"
             }
         }
+    }
+
+    private suspend fun saveSkKey(skData: SkKeyData) {
+        val entity = SshKey(
+            label = "FIDO2: ${skData.application}",
+            keyType = skData.algorithmName,
+            privateKeyBytes = SkKeyData.serialize(skData),
+            publicKeyOpenSsh = SkKeyParser.formatPublicKeyLine(skData),
+            fingerprintSha256 = SkKeyParser.fingerprintSha256(skData.publicKeyBlob),
+        )
+        repository.save(entity)
+    }
+
+    // ---------- FIDO resident key discovery (#152) ----------
+
+    /** Set true while [discoverFromSecurityKey] is running. UI hides the
+     *  Add menu and shows the FIDO touch/PIN dialog while non-zero. */
+    private val _discoverInProgress = MutableStateFlow(false)
+    val discoverInProgress: StateFlow<Boolean> = _discoverInProgress.asStateFlow()
+
+    /** Passthrough to FidoAuthenticator's touch-prompt state so the UI
+     *  can render the same waiting/touch/PIN dialog as the connect path
+     *  during a discovery enumeration. */
+    val fidoTouchPrompt: StateFlow<sh.haven.core.fido.FidoTouchPrompt?> =
+        fidoAuthenticator.touchPrompt
+
+    /**
+     * Discovered SSH-SK credentials staged for the user to pick from.
+     * Non-empty when enumeration succeeded; the UI shows a picker dialog
+     * and calls [importDiscoveredCredentials] with the user's selection
+     * or [dismissDiscoveryPicker] to discard.
+     */
+    private val _discoveredCredentials = MutableStateFlow<List<DiscoveredSkCredential>>(emptyList())
+    val discoveredCredentials: StateFlow<List<DiscoveredSkCredential>> = _discoveredCredentials.asStateFlow()
+
+    /**
+     * Enumerate resident SSH-SK credentials off a connected security key
+     * via CTAP 2.1 `authenticatorCredentialManagement` (issue #152). Drives
+     * the existing FIDO touch/PIN flow ([FidoAuthenticator.touchPrompt]);
+     * once the enumeration completes, populates [discoveredCredentials]
+     * for the picker.
+     */
+    fun discoverFromSecurityKey() {
+        if (_discoverInProgress.value) return
+        viewModelScope.launch {
+            _discoverInProgress.value = true
+            try {
+                val results = fidoAuthenticator.enumerateResidentCredentials(rpIdPrefix = "ssh")
+                if (results.isEmpty()) {
+                    _message.value = "No SSH resident keys found on this security key"
+                } else {
+                    _discoveredCredentials.value = results.mapIndexed { i, (rpId, sk) ->
+                        DiscoveredSkCredential(
+                            id = "$i",
+                            rpId = rpId,
+                            algorithmName = sk.algorithmName,
+                            fingerprint = SkKeyParser.fingerprintSha256(sk.publicKeyBlob),
+                            data = sk,
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("KeysViewModel", "discoverFromSecurityKey failed", e)
+                _error.value = "FIDO discovery failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _discoverInProgress.value = false
+            }
+        }
+    }
+
+    /** Save a subset of the discovered credentials. Pass empty to drop all. */
+    fun importDiscoveredCredentials(ids: Set<String>) {
+        val selected = _discoveredCredentials.value.filter { it.id in ids }
+        _discoveredCredentials.value = emptyList()
+        if (selected.isEmpty()) return
+        viewModelScope.launch {
+            var ok = 0
+            for (cred in selected) {
+                try {
+                    saveSkKey(cred.data)
+                    ok++
+                } catch (e: Exception) {
+                    Log.e("KeysViewModel", "Save of discovered ${cred.rpId} failed", e)
+                }
+            }
+            _message.value = if (ok == selected.size) {
+                "Imported $ok resident SSH key${if (ok == 1) "" else "s"}"
+            } else {
+                "Imported $ok of ${selected.size} keys; check log for failures"
+            }
+        }
+    }
+
+    fun dismissDiscoveryPicker() {
+        _discoveredCredentials.value = emptyList()
     }
 
     fun cancelImport() {

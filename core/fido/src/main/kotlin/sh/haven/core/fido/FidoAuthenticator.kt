@@ -175,45 +175,7 @@ class FidoAuthenticator @Inject constructor(
 
         val clientDataHash = MessageDigest.getInstance("SHA-256").digest(message)
 
-        val deferred = CompletableDeferred<ConnectedDevice>()
-        pendingDevice = deferred
-
-        // ----- USB: check already connected, else register attach receiver
-        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-        val alreadyConnectedUsb = usbManager.deviceList.values.firstOrNull { isFidoHidDevice(it) }
-        var usbReceiver: BroadcastReceiver? = null
-        if (alreadyConnectedUsb != null) {
-            Log.d(TAG, "FIDO key already plugged in: ${alreadyConnectedUsb.productName ?: "(unknown product)"}")
-            deferred.complete(ConnectedDevice.Usb(alreadyConnectedUsb))
-        } else {
-            usbReceiver = registerUsbAttachReceiver(deferred)
-            Log.d(TAG, "Registered USB attach receiver; waiting for key to be plugged in")
-        }
-
-        // ----- NFC: if an activity is in the foreground, enable reader mode
-        val nfcActivity = activeActivity?.get()
-        var nfcEnabled = false
-        if (nfcActivity != null && !deferred.isCompleted) {
-            nfcEnabled = startNfcReaderModeOnMain(nfcActivity, deferred)
-            Log.d(TAG, "NFC reader mode ${if (nfcEnabled) "enabled" else "unavailable"} for current activity")
-        } else if (nfcActivity == null) {
-            Log.d(TAG, "No foreground activity — NFC path disabled, USB only")
-        }
-
-        // If a USB key was already plugged in, we already completed the
-        // deferred above (line 174) via the already-attached USB branch —
-        // skip straight to TouchKey with USB transport. Otherwise tell
-        // the UI we're waiting for the user to plug in / tap.
-        _touchPrompt.value = if (deferred.isCompleted) {
-            FidoTouchPrompt.TouchKey(FidoTouchPrompt.TouchKey.Transport.USB)
-        } else {
-            FidoTouchPrompt.WaitingForKey
-        }
-
-        try {
-            Log.d(TAG, "Waiting for security key (USB${if (nfcEnabled) " or NFC" else ""})...")
-            val device = deferred.await()
-
+        withDiscoveredFidoDevice { device ->
             // Device just landed — for the non-UV path, switch the prompt to
             // "touch your key now" before sending GetAssertion, with the
             // transport dictated by which discovery branch fired. The UV
@@ -242,6 +204,51 @@ class FidoAuthenticator @Inject constructor(
             }, counter=${result.counter}")
 
             result
+        }
+    }
+
+    /**
+     * Run [perform] once a FIDO key has been discovered via USB or NFC.
+     * Handles the shared discovery / touch-prompt / cleanup lifecycle.
+     */
+    private suspend fun <R> withDiscoveredFidoDevice(
+        perform: suspend (ConnectedDevice) -> R,
+    ): R {
+        val deferred = CompletableDeferred<ConnectedDevice>()
+        pendingDevice = deferred
+
+        // ----- USB: check already connected, else register attach receiver
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val alreadyConnectedUsb = usbManager.deviceList.values.firstOrNull { isFidoHidDevice(it) }
+        var usbReceiver: BroadcastReceiver? = null
+        if (alreadyConnectedUsb != null) {
+            Log.d(TAG, "FIDO key already plugged in: ${alreadyConnectedUsb.productName ?: "(unknown product)"}")
+            deferred.complete(ConnectedDevice.Usb(alreadyConnectedUsb))
+        } else {
+            usbReceiver = registerUsbAttachReceiver(deferred)
+            Log.d(TAG, "Registered USB attach receiver; waiting for key to be plugged in")
+        }
+
+        // ----- NFC: if an activity is in the foreground, enable reader mode
+        val nfcActivity = activeActivity?.get()
+        var nfcEnabled = false
+        if (nfcActivity != null && !deferred.isCompleted) {
+            nfcEnabled = startNfcReaderModeOnMain(nfcActivity, deferred)
+            Log.d(TAG, "NFC reader mode ${if (nfcEnabled) "enabled" else "unavailable"} for current activity")
+        } else if (nfcActivity == null) {
+            Log.d(TAG, "No foreground activity — NFC path disabled, USB only")
+        }
+
+        _touchPrompt.value = if (deferred.isCompleted) {
+            FidoTouchPrompt.TouchKey(FidoTouchPrompt.TouchKey.Transport.USB)
+        } else {
+            FidoTouchPrompt.WaitingForKey
+        }
+
+        try {
+            Log.d(TAG, "Waiting for security key (USB${if (nfcEnabled) " or NFC" else ""})...")
+            val device = deferred.await()
+            return perform(device)
         } finally {
             pendingDevice = null
             usbReceiver?.let {
@@ -255,6 +262,45 @@ class FidoAuthenticator @Inject constructor(
                 stopNfcReaderModeOnMain(nfcActivity)
             }
             _touchPrompt.value = null
+        }
+    }
+
+    /**
+     * Enumerate resident SSH-SK credentials on an inserted/tapped security
+     * key via CTAP 2.1 `authenticatorCredentialManagement`. Lets the user
+     * import keys that were registered with `ssh-keygen -O resident`
+     * without first having to run `ssh-keygen -K` to extract local stubs
+     * (issue #152).
+     *
+     * Filters returned credentials to RPs whose `id` starts with
+     * [rpIdPrefix] (default "ssh", which matches the canonical "ssh:"
+     * application name `ssh-keygen` uses for SK keys). Pass a different
+     * prefix when discovering WebAuthn-style credentials, or empty string
+     * to return everything.
+     *
+     * Always uses PIN/UV — the credentialManagement command requires a
+     * cm-permission token, and the authenticator gates token issuance on
+     * PIN entry. A key without a PIN configured raises [IOException]
+     * pointing the user at `ykman fido access change-pin`.
+     *
+     * Returns a list of (rpId, [SkKeyData]) pairs. Each SkKeyData is
+     * synthesised from the COSE_Key in the CTAP response — algorithm
+     * detected from kty/alg, public key blob built in OpenSSH wire
+     * format, application set to the RP id, flags defaulted to 0x01
+     * (user-presence). The caller persists the chosen ones into the
+     * SSH key store via the same path as file-imported SK keys.
+     */
+    suspend fun enumerateResidentCredentials(
+        rpIdPrefix: String = "ssh",
+    ): List<Pair<String, SkKeyData>> = withContext(Dispatchers.IO) {
+        lastAssertionError = null
+        Log.d(TAG, "FIDO2 enumerateResidentCredentials requested: rpIdPrefix='$rpIdPrefix'")
+
+        withDiscoveredFidoDevice { device ->
+            when (device) {
+                is ConnectedDevice.Usb -> performUsbEnumerate(device.device, rpIdPrefix)
+                is ConnectedDevice.Nfc -> performNfcEnumerate(device.tag, rpIdPrefix)
+            }
         }
     }
 
@@ -342,6 +388,62 @@ class FidoAuthenticator @Inject constructor(
         }
     }
 
+    /**
+     * Request USB permission for [device] if not already held, waiting for
+     * the system-dialog response. Used by both the assertion and the
+     * credentialManagement enumerate paths so they share the same FLAG_MUTABLE
+     * + explicit-package fix from #15 (olmari, Pixel 9 Fold).
+     */
+    private suspend fun ensureUsbPermission(usbManager: UsbManager, device: UsbDevice) {
+        if (usbManager.hasPermission(device)) {
+            Log.d(TAG, "USB permission already held for ${device.productName}")
+            return
+        }
+        val deviceName = device.productName ?: "(unknown product)"
+        Log.d(TAG, "Requesting USB permission for $deviceName")
+        val permDeferred = CompletableDeferred<Boolean>()
+        val permReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                if (intent.action == ACTION_USB_PERMISSION) {
+                    val g = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    Log.d(TAG, "USB permission callback: granted=$g")
+                    permDeferred.complete(g)
+                }
+            }
+        }
+        val filter = IntentFilter(ACTION_USB_PERMISSION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(permReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(permReceiver, filter)
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+            PendingIntent.FLAG_MUTABLE else 0
+        // Android 14+ (targetSdk 34+) rejects FLAG_MUTABLE PendingIntents
+        // built around an implicit Intent. UsbManager fills the granted-flag
+        // extra back into the intent so it must stay MUTABLE — make the
+        // intent explicit by package instead. See #15 (olmari, Pixel 9 Fold).
+        val permIntent = Intent(ACTION_USB_PERMISSION).setPackage(context.packageName)
+        usbManager.requestPermission(
+            device,
+            PendingIntent.getBroadcast(context, 0, permIntent, flags),
+        )
+        val granted = try {
+            withTimeoutOrNull(USB_PERMISSION_TIMEOUT_MS) { permDeferred.await() }
+        } finally {
+            try { context.unregisterReceiver(permReceiver) } catch (_: IllegalArgumentException) {}
+        }
+        if (granted == null) {
+            Log.e(TAG, "USB permission timed out for $deviceName")
+            throw IOException("USB permission timed out — no response from system dialog")
+        }
+        if (!granted) {
+            Log.e(TAG, "USB permission denied for $deviceName")
+            throw IOException("USB permission denied")
+        }
+        Log.d(TAG, "USB permission granted for $deviceName")
+    }
+
     private suspend fun performUsbAssertion(
         device: UsbDevice,
         rpId: String,
@@ -350,55 +452,7 @@ class FidoAuthenticator @Inject constructor(
         requireUv: Boolean,
     ): FidoAssertionResult {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-
-        // Request USB permission if needed
-        if (!usbManager.hasPermission(device)) {
-            val deviceName = device.productName ?: "(unknown product)"
-            Log.d(TAG, "Requesting USB permission for $deviceName")
-            val permDeferred = CompletableDeferred<Boolean>()
-            val permReceiver = object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context, intent: Intent) {
-                    if (intent.action == ACTION_USB_PERMISSION) {
-                        val g = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                        Log.d(TAG, "USB permission callback: granted=$g")
-                        permDeferred.complete(g)
-                    }
-                }
-            }
-            val filter = IntentFilter(ACTION_USB_PERMISSION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(permReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                context.registerReceiver(permReceiver, filter)
-            }
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-                PendingIntent.FLAG_MUTABLE else 0
-            // Android 14+ (targetSdk 34+) rejects FLAG_MUTABLE PendingIntents
-            // built around an implicit Intent. UsbManager fills the granted-flag
-            // extra back into the intent so it must stay MUTABLE — make the
-            // intent explicit by package instead. See #15 (olmari, Pixel 9 Fold).
-            val permIntent = Intent(ACTION_USB_PERMISSION).setPackage(context.packageName)
-            usbManager.requestPermission(
-                device,
-                PendingIntent.getBroadcast(context, 0, permIntent, flags),
-            )
-            val granted = try {
-                withTimeoutOrNull(USB_PERMISSION_TIMEOUT_MS) { permDeferred.await() }
-            } finally {
-                try { context.unregisterReceiver(permReceiver) } catch (_: IllegalArgumentException) {}
-            }
-            if (granted == null) {
-                Log.e(TAG, "USB permission timed out for $deviceName")
-                throw IOException("USB permission timed out — no response from system dialog")
-            }
-            if (!granted) {
-                Log.e(TAG, "USB permission denied for $deviceName")
-                throw IOException("USB permission denied")
-            }
-            Log.d(TAG, "USB permission granted for $deviceName")
-        } else {
-            Log.d(TAG, "USB permission already held for ${device.productName}")
-        }
+        ensureUsbPermission(usbManager, device)
 
         // Find HID interface and endpoints
         val hidInterface = (0 until device.interfaceCount)
@@ -426,7 +480,10 @@ class FidoAuthenticator @Inject constructor(
                 transport.init()
 
                 val (pinUvAuthParam, pinProtocol) = if (requireUv) {
-                    runUvPinProtocol(rpId, clientDataHash) { transport.sendCborCommand(it) }
+                    val (token, proto) = runUvPinProtocol(
+                        rpId, Ctap2Cbor.PERMISSION_GET_ASSERTION,
+                    ) { transport.sendCborCommand(it) }
+                    proto.authenticate(token, clientDataHash) to proto.version
                 } else null to null
 
                 Log.d(TAG, "CTAPHID init complete, sending GetAssertion (rpId=$rpId, uv=${pinUvAuthParam != null})")
@@ -469,7 +526,10 @@ class FidoAuthenticator @Inject constructor(
             transport.select()
 
             val (pinUvAuthParam, pinProtocol) = if (requireUv) {
-                runUvPinProtocol(rpId, clientDataHash) { transport.sendCborCommand(it) }
+                val (token, proto) = runUvPinProtocol(
+                    rpId, Ctap2Cbor.PERMISSION_GET_ASSERTION,
+                ) { transport.sendCborCommand(it) }
+                proto.authenticate(token, clientDataHash) to proto.version
             } else null to null
 
             _touchPrompt.value = FidoTouchPrompt.TouchKey(FidoTouchPrompt.TouchKey.Transport.NFC)
@@ -485,19 +545,220 @@ class FidoAuthenticator @Inject constructor(
         }
     }
 
+    // ---------- credentialManagement enumeration ----------
+
+    private suspend fun performUsbEnumerate(
+        device: UsbDevice,
+        rpIdPrefix: String,
+    ): List<Pair<String, SkKeyData>> {
+        // Open the USB transport and run the shared enumerate. USB permission
+        // handling is duplicated from performUsbAssertion — pulling it out
+        // into a generic openUsbCtapTransport helper is a follow-up.
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        ensureUsbPermission(usbManager, device)
+
+        val hidInterface = (0 until device.interfaceCount)
+            .map { device.getInterface(it) }
+            .firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_HID }
+            ?: throw IOException("No HID interface on FIDO device")
+        var endpointIn: android.hardware.usb.UsbEndpoint? = null
+        var endpointOut: android.hardware.usb.UsbEndpoint? = null
+        for (i in 0 until hidInterface.endpointCount) {
+            val ep = hidInterface.getEndpoint(i)
+            if (ep.direction == UsbConstants.USB_DIR_IN) endpointIn = ep
+            if (ep.direction == UsbConstants.USB_DIR_OUT) endpointOut = ep
+        }
+        requireNotNull(endpointIn) { "No IN endpoint on HID interface" }
+        requireNotNull(endpointOut) { "No OUT endpoint on HID interface" }
+
+        val connection = usbManager.openDevice(device)
+            ?: throw IOException("Failed to open USB device")
+        connection.claimInterface(hidInterface, true)
+
+        try {
+            CtapHidTransport(connection, endpointIn, endpointOut).use { transport ->
+                Log.d(TAG, "CTAPHID init (enumerate)...")
+                transport.init()
+                return runCredentialManagementEnumerate(
+                    rpIdPrefix = rpIdPrefix,
+                    touchTransport = FidoTouchPrompt.TouchKey.Transport.USB,
+                ) { transport.sendCborCommand(it) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "USB enumerate failed: ${e.javaClass.simpleName}: ${e.message}")
+            lastAssertionError = e.message
+            throw e
+        }
+    }
+
+    private suspend fun performNfcEnumerate(
+        tag: Tag,
+        rpIdPrefix: String,
+    ): List<Pair<String, SkKeyData>> {
+        val isoDep = IsoDep.get(tag) ?: throw IOException("Tag does not support ISO-DEP")
+        CtapNfcTransport(isoDep).use { transport ->
+            transport.connect()
+            transport.select()
+            return runCredentialManagementEnumerate(
+                rpIdPrefix = rpIdPrefix,
+                touchTransport = FidoTouchPrompt.TouchKey.Transport.NFC,
+            ) { transport.sendCborCommand(it) }
+        }
+    }
+
+    /**
+     * Drive the CTAP2.1 `authenticatorCredentialManagement` enumeration loop:
+     * PIN/UV exchange (cm-permission token) → enumerateRPs Begin/GetNext for
+     * each registered RP → for each matching RP, enumerateCredentials
+     * Begin/GetNext.
+     *
+     * The per-subcommand `pinUvAuthParam` is derived freshly from the token
+     * each call — `LEFT(16, HMAC-SHA-256(token, subCommand_byte ||
+     * subCommandParams_cbor))`. Subcommands without params (RPs Begin,
+     * RPs GetNext, Creds GetNext) hash just the subCommand byte; the only
+     * subcommand that takes params here is CredsBegin (rpIdHash map).
+     *
+     * Transport-agnostic — caller passes the `send` lambda wired to either
+     * CTAPHID or ISO-DEP-NFC. Returns (rpId, [SkKeyData]) pairs ready for
+     * the SSH key store.
+     */
+    private suspend fun runCredentialManagementEnumerate(
+        rpIdPrefix: String,
+        touchTransport: FidoTouchPrompt.TouchKey.Transport,
+        send: (ByteArray) -> ByteArray,
+    ): List<Pair<String, SkKeyData>> {
+        // 1. PIN/UV exchange — cm token has no rpId scoping.
+        val (token, protocol) = runUvPinProtocol(
+            rpId = null,
+            permission = Ctap2Cbor.PERMISSION_CREDENTIAL_MANAGEMENT,
+            send = send,
+        )
+
+        // 2. enumerateRPs: Begin (subCmd 2) returns first RP + totalRPs,
+        //    then GetNext (subCmd 3) for the rest. No subCommandParams.
+        _touchPrompt.value = FidoTouchPrompt.TouchKey(touchTransport)
+        val firstRp = sendCmCommand(
+            send, protocol, token,
+            subCommand = Ctap2Cbor.CM_SUB_ENUMERATE_RPS_BEGIN,
+            params = null,
+            includeAuth = true,
+            describe = "enumerateRPsBegin",
+        )?.let { Ctap2Cbor.decodeEnumerateRPsResponse(it) }
+            ?: return emptyList() // STATUS_NO_CREDENTIALS — no resident creds at all
+        val rpList = mutableListOf(firstRp)
+        val total = firstRp.totalRPs ?: 1
+        for (i in 1 until total) {
+            val resp = sendCmCommand(
+                send, protocol, token,
+                subCommand = Ctap2Cbor.CM_SUB_ENUMERATE_RPS_GET_NEXT,
+                params = null,
+                includeAuth = false,
+                describe = "enumerateRPsGetNext[$i]",
+            ) ?: break
+            rpList += Ctap2Cbor.decodeEnumerateRPsResponse(resp)
+        }
+        Log.d(TAG, "Found ${rpList.size} RPs: ${rpList.map { it.id }}")
+
+        // 3. For each RP whose id matches the prefix, enumerate its credentials.
+        val out = mutableListOf<Pair<String, SkKeyData>>()
+        for (rp in rpList) {
+            if (rpIdPrefix.isNotEmpty() && !rp.id.startsWith(rpIdPrefix)) continue
+            val paramsBytes = Ctap2Cbor.encodeEnumerateCredentialsParams(rp.rpIdHash)
+            val firstCred = sendCmCommand(
+                send, protocol, token,
+                subCommand = Ctap2Cbor.CM_SUB_ENUMERATE_CREDS_BEGIN,
+                params = paramsBytes,
+                includeAuth = true,
+                describe = "enumerateCredsBegin(${rp.id})",
+            )?.let { Ctap2Cbor.decodeEnumerateCredentialsResponse(it) } ?: continue
+            val creds = mutableListOf(firstCred)
+            val totalCreds = firstCred.totalCredentials ?: 1
+            for (i in 1 until totalCreds) {
+                val resp = sendCmCommand(
+                    send, protocol, token,
+                    subCommand = Ctap2Cbor.CM_SUB_ENUMERATE_CREDS_GET_NEXT,
+                    params = null,
+                    includeAuth = false,
+                    describe = "enumerateCredsGetNext[$i](${rp.id})",
+                ) ?: break
+                creds += Ctap2Cbor.decodeEnumerateCredentialsResponse(resp)
+            }
+            Log.d(TAG, "RP ${rp.id}: ${creds.size} credentials")
+            for (cred in creds) {
+                // We can't tell from CTAP whether the key was registered with
+                // verify-required, so default flags to 0x01 (user-presence).
+                // If the user's key actually requires UV, the GetAssertion
+                // path will still prompt for PIN when signing — the flags
+                // bit is advisory metadata for the SSH stub, not a gate.
+                val sk = SkKeyParser.buildFromCtapCredential(cred, rp.id, flags = 0x01)
+                out += rp.id to sk
+            }
+        }
+        Log.d(TAG, "Enumerate complete: ${out.size} SSH-SK credential(s) returned")
+        return out
+    }
+
+    /**
+     * Send one credentialManagement subcommand, derive the per-subcommand
+     * pinUvAuthParam when [includeAuth] is true, and return the response
+     * payload (without the status byte) or null on STATUS_NO_CREDENTIALS.
+     */
+    private fun sendCmCommand(
+        send: (ByteArray) -> ByteArray,
+        protocol: Ctap2PinProtocol,
+        token: ByteArray,
+        subCommand: Int,
+        params: ByteArray?,
+        includeAuth: Boolean,
+        describe: String,
+    ): ByteArray? {
+        val authParam = if (includeAuth) {
+            // pinUvAuthParam = LEFT(16, HMAC(token, subCommand_byte || params))
+            val msg = byteArrayOf(subCommand.toByte()) + (params ?: ByteArray(0))
+            protocol.authenticate(token, msg)
+        } else null
+        val cmd = Ctap2Cbor.encodeCredentialManagementCommand(
+            subCommand = subCommand,
+            subCommandParams = params,
+            pinUvAuthProtocol = if (authParam != null) protocol.version else null,
+            pinUvAuthParam = authParam,
+        )
+        val resp = send(cmd)
+        if (resp.isEmpty()) throw IOException("$describe: empty CTAP response")
+        val status = resp[0]
+        if (status == Ctap2Cbor.STATUS_NO_CREDENTIALS) {
+            Log.d(TAG, "$describe: STATUS_NO_CREDENTIALS")
+            return null
+        }
+        if (status != Ctap2Cbor.STATUS_OK) {
+            throw IOException("$describe: CTAP2 error 0x${"%02x".format(status)}")
+        }
+        return resp.copyOfRange(1, resp.size)
+    }
+
     /**
      * Run the CTAP2 clientPIN protocol against an authenticator over [send]
      * (one round-trip per CBOR command, status byte preserved). Returns
-     * `(pinUvAuthParam, protocolVersion)` to be included in the subsequent
-     * GetAssertion. Throws [IOException] if the key has no PIN configured,
-     * the user cancels, or PIN entry exhausts the authenticator's retry
-     * counter.
+     * `(pinUvAuthToken, protocol)` — the *raw* token, not a derived
+     * authParam. Callers compute their own authParam(s) per command via
+     * `protocol.authenticate(token, message)`:
+     *   - GetAssertion uses `message = clientDataHash`.
+     *   - CredentialManagement uses `message = subCommand_byte ||
+     *     subCommandParams_cbor`, recomputed per subcommand.
+     *
+     * [permission] is one of the `Ctap2Cbor.PERMISSION_*` flags. The
+     * token is scoped by the authenticator to that permission, so e.g. a
+     * cm-permission token will be rejected if the caller then tries to
+     * use it for a GetAssertion authParam (and vice versa).
+     *
+     * Throws [IOException] if the key has no PIN configured, the user
+     * cancels, or PIN entry exhausts the authenticator's retry counter.
      */
     private suspend fun runUvPinProtocol(
-        rpId: String,
-        clientDataHash: ByteArray,
+        rpId: String?,
+        permission: Int,
         send: (ByteArray) -> ByteArray,
-    ): Pair<ByteArray, Int> {
+    ): Pair<ByteArray, Ctap2PinProtocol> {
         // 1. authenticatorGetInfo to learn supported protocols and PIN state
         val infoResp = send(Ctap2Cbor.encodeGetInfoCommand())
         ensureOk(infoResp, "GetInfo")
@@ -554,7 +815,7 @@ class FidoAuthenticator @Inject constructor(
                     protocol = protocol.version,
                     platformKeyAgreement = platformKa,
                     pinHashEnc = pinHashEnc,
-                    permissions = Ctap2Cbor.PERMISSION_GET_ASSERTION,
+                    permissions = permission,
                     rpId = rpId,
                 )
             } else {
@@ -571,9 +832,8 @@ class FidoAuthenticator @Inject constructor(
                         tokResp.copyOfRange(1, tokResp.size)
                     )
                     val token = protocol.decrypt(sharedSecret, encToken)
-                    val authParam = protocol.authenticate(token, clientDataHash)
-                    Log.d(TAG, "PIN verified; pinUvAuthParam=${authParam.size}b")
-                    return authParam to protocol.version
+                    Log.d(TAG, "PIN verified; token=${token.size}b, permission=0x${"%02x".format(permission)}")
+                    return token to protocol
                 }
                 Ctap2Cbor.STATUS_PIN_INVALID -> {
                     retriesNote = (retriesNote ?: 8) - 1

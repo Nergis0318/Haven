@@ -19,6 +19,7 @@ object Ctap2Cbor {
     const val CMD_GET_ASSERTION: Byte = 0x02
     const val CMD_GET_INFO: Byte = 0x04
     const val CMD_CLIENT_PIN: Byte = 0x06
+    const val CMD_CREDENTIAL_MANAGEMENT: Byte = 0x0A
 
     // CTAP2 status codes
     const val STATUS_OK: Byte = 0x00
@@ -40,6 +41,14 @@ object Ctap2Cbor {
 
     // PIN/UV permission bits (FIDO2 §6.5.5.7)
     const val PERMISSION_GET_ASSERTION = 0x02
+    const val PERMISSION_CREDENTIAL_MANAGEMENT = 0x04
+
+    // authenticatorCredentialManagement subcommands (CTAP 2.1 §6.8.2)
+    const val CM_SUB_GET_CREDS_METADATA = 1
+    const val CM_SUB_ENUMERATE_RPS_BEGIN = 2
+    const val CM_SUB_ENUMERATE_RPS_GET_NEXT = 3
+    const val CM_SUB_ENUMERATE_CREDS_BEGIN = 4
+    const val CM_SUB_ENUMERATE_CREDS_GET_NEXT = 5
 
     data class AssertionResponse(
         val authData: ByteArray,
@@ -315,6 +324,209 @@ object Ctap2Cbor {
         requireNotNull(x) { "COSE_Key missing x (-2)" }
         requireNotNull(y) { "COSE_Key missing y (-3)" }
         return CoseEcdhPubKey(x, y)
+    }
+
+    // ---------- authenticatorCredentialManagement (CTAP 2.1 §6.8) ----------
+
+    /**
+     * COSE_Key shapes we care about for SSH-SK enumeration.
+     * Ed25519 (OKP, alg = -8 EdDSA) carries the 32-byte public key at COSE
+     * label -2 (`x`). ECDSA P-256 (EC2, alg = -7 ES256) carries `x` and `y`
+     * at COSE labels -2 and -3.
+     */
+    sealed class CosePublicKey {
+        data class Ed25519(val rawKey: ByteArray) : CosePublicKey()
+        data class EcdsaP256(val x: ByteArray, val y: ByteArray) : CosePublicKey()
+    }
+
+    /** One row from authenticatorCredentialManagement.enumerateRPs. */
+    data class RpEntity(
+        val id: String,
+        val rpIdHash: ByteArray,
+        /** Only present on the Begin response; null on subsequent GetNext rows. */
+        val totalRPs: Int? = null,
+    )
+
+    /** One row from authenticatorCredentialManagement.enumerateCredentials. */
+    data class CredentialEntry(
+        val credentialId: ByteArray,
+        val publicKey: CosePublicKey,
+        val userId: ByteArray?,
+        val userName: String?,
+        val userDisplayName: String?,
+        /** Only present on the Begin response; null on subsequent GetNext rows. */
+        val totalCredentials: Int? = null,
+    )
+
+    /**
+     * Encode authenticatorCredentialManagement (0x0A).
+     * @param subCommand one of `CM_SUB_*`.
+     * @param subCommandParams CBOR-encoded params map (without the major-5
+     *   wrapper byte — i.e. the bytes you'd get from encoding the params
+     *   as a fresh CBOR map). Required for ENUMERATE_CREDS_BEGIN; null for
+     *   GET_CREDS_METADATA, ENUMERATE_RPS_*, and the GET_NEXT subcommands.
+     * @param pinUvAuthProtocol the PIN/UV protocol version (1 or 2).
+     *   Required for any subCommand that takes a token (1, 2, 4); the
+     *   GET_NEXT subcommands (3, 5) carry no auth.
+     * @param pinUvAuthParam LEFT(16, HMAC-SHA-256(token, subCommand-byte ||
+     *   subCommandParams)). Required for the same subcommands as protocol.
+     */
+    fun encodeCredentialManagementCommand(
+        subCommand: Int,
+        subCommandParams: ByteArray? = null,
+        pinUvAuthProtocol: Int? = null,
+        pinUvAuthParam: ByteArray? = null,
+    ): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(CMD_CREDENTIAL_MANAGEMENT.toInt())
+
+        var entries = 1 // subCommand always
+        if (subCommandParams != null) entries++
+        if (pinUvAuthProtocol != null) entries++
+        if (pinUvAuthParam != null) entries++
+        encodeMapHeader(out, entries)
+
+        encodeUint(out, 1); encodeUint(out, subCommand)
+        if (subCommandParams != null) {
+            encodeUint(out, 2)
+            // subCommandParams is already a valid CBOR map; write it as-is.
+            out.write(subCommandParams)
+        }
+        if (pinUvAuthProtocol != null) {
+            encodeUint(out, 3); encodeUint(out, pinUvAuthProtocol)
+        }
+        if (pinUvAuthParam != null) {
+            encodeUint(out, 4); encodeByteString(out, pinUvAuthParam)
+        }
+        return out.toByteArray()
+    }
+
+    /**
+     * Encode the `subCommandParams` map for ENUMERATE_CREDS_BEGIN:
+     *   { 0x01 (rpIDHash): bstr }
+     * Returned bytes are what should be hashed (alongside the subCommand
+     * byte) for the pinUvAuthParam derivation, AND what should be passed
+     * as the `subCommandParams` argument to
+     * [encodeCredentialManagementCommand].
+     */
+    fun encodeEnumerateCredentialsParams(rpIdHash: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        encodeMapHeader(out, 1)
+        encodeUint(out, 1); encodeByteString(out, rpIdHash)
+        return out.toByteArray()
+    }
+
+    /** Decode an enumerateRPsBegin or enumerateRPsGetNextRP response. */
+    fun decodeEnumerateRPsResponse(data: ByteArray): RpEntity {
+        val buf = ByteBuffer.wrap(data)
+        val mapSize = readMapHeader(buf)
+        var rpId: String? = null
+        var rpIdHash: ByteArray? = null
+        var totalRPs: Int? = null
+        for (i in 0 until mapSize) {
+            val key = readSignedInt(buf)
+            when (key) {
+                3 -> { // rp: PublicKeyCredentialRpEntity { "id": text, ... }
+                    val n = readMapHeader(buf)
+                    for (j in 0 until n) {
+                        val sub = readTextString(buf)
+                        if (sub == "id") rpId = readTextString(buf) else skipValue(buf)
+                    }
+                }
+                4 -> rpIdHash = readByteString(buf)
+                5 -> totalRPs = readSignedInt(buf)
+                else -> skipValue(buf)
+            }
+        }
+        requireNotNull(rpId) { "enumerateRPs response missing rp.id (key 3)" }
+        requireNotNull(rpIdHash) { "enumerateRPs response missing rpIDHash (key 4)" }
+        return RpEntity(id = rpId, rpIdHash = rpIdHash, totalRPs = totalRPs)
+    }
+
+    /**
+     * Decode an enumerateCredentialsBegin or enumerateCredentialsGetNext
+     * response. The publicKey field is parsed to [CosePublicKey] —
+     * Ed25519 (OKP -8) or ECDSA P-256 (EC2 -7); other algorithms throw.
+     */
+    fun decodeEnumerateCredentialsResponse(data: ByteArray): CredentialEntry {
+        val buf = ByteBuffer.wrap(data)
+        val mapSize = readMapHeader(buf)
+        var userId: ByteArray? = null
+        var userName: String? = null
+        var userDisplay: String? = null
+        var credentialId: ByteArray? = null
+        var publicKey: CosePublicKey? = null
+        var totalCreds: Int? = null
+        for (i in 0 until mapSize) {
+            val key = readSignedInt(buf)
+            when (key) {
+                6 -> { // user: PublicKeyCredentialUserEntity { id, name?, displayName? }
+                    val n = readMapHeader(buf)
+                    for (j in 0 until n) {
+                        val sub = readTextString(buf)
+                        when (sub) {
+                            "id" -> userId = readByteString(buf)
+                            "name" -> userName = readTextString(buf)
+                            "displayName" -> userDisplay = readTextString(buf)
+                            else -> skipValue(buf)
+                        }
+                    }
+                }
+                7 -> { // credentialID: PublicKeyCredentialDescriptor { id, type, transports? }
+                    val n = readMapHeader(buf)
+                    for (j in 0 until n) {
+                        val sub = readTextString(buf)
+                        if (sub == "id") credentialId = readByteString(buf) else skipValue(buf)
+                    }
+                }
+                8 -> publicKey = decodeCoseAuthenticatorPublicKey(buf)
+                9 -> totalCreds = readSignedInt(buf)
+                else -> skipValue(buf)
+            }
+        }
+        requireNotNull(credentialId) { "enumerateCredentials response missing credentialID (key 7)" }
+        requireNotNull(publicKey) { "enumerateCredentials response missing publicKey (key 8)" }
+        return CredentialEntry(
+            credentialId = credentialId,
+            publicKey = publicKey,
+            userId = userId,
+            userName = userName,
+            userDisplayName = userDisplay,
+            totalCredentials = totalCreds,
+        )
+    }
+
+    /**
+     * Decode a credential's COSE_Key into [CosePublicKey]. Handles the two
+     * algorithms SSH-SK actually uses:
+     *   - Ed25519 (kty=1 OKP, alg=-8): -1 = crv (6 = Ed25519), -2 = x (raw key).
+     *   - ECDSA P-256 (kty=2 EC2, alg=-7): -1 = crv (1 = P-256), -2 = x, -3 = y.
+     */
+    private fun decodeCoseAuthenticatorPublicKey(buf: ByteBuffer): CosePublicKey {
+        val n = readMapHeader(buf)
+        var kty: Int? = null
+        var alg: Int? = null
+        var x: ByteArray? = null
+        var y: ByteArray? = null
+        for (i in 0 until n) {
+            val k = readSignedInt(buf)
+            when (k) {
+                1 -> kty = readSignedInt(buf)
+                3 -> alg = readSignedInt(buf)
+                -1 -> skipValue(buf) // crv — implied by alg
+                -2 -> x = readByteString(buf)
+                -3 -> y = readByteString(buf)
+                else -> skipValue(buf)
+            }
+        }
+        return when {
+            kty == 1 && alg == -8 && x != null && x.size == 32 -> CosePublicKey.Ed25519(x)
+            kty == 2 && alg == -7 && x != null && y != null && x.size == 32 && y.size == 32 ->
+                CosePublicKey.EcdsaP256(x, y)
+            else -> throw IllegalArgumentException(
+                "Unsupported COSE_Key for SSH-SK: kty=$kty alg=$alg x=${x?.size} y=${y?.size}"
+            )
+        }
     }
 
     // ---------- CBOR encoding helpers ----------
