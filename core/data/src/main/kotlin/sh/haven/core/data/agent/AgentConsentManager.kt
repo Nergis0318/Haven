@@ -1,5 +1,6 @@
 package sh.haven.core.data.agent
 
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -191,9 +192,13 @@ class AgentConsentManager @Inject constructor() {
         clientVersion: String?,
         timeoutMs: Long = 60_000,
     ): ConsentDecision {
-        if (!foregroundActive) return ConsentDecision.DENY
+        if (!foregroundActive) {
+            Log.w(LOG_TAG, "requestClientPairing('$clientName'): foreground=false — failing closed")
+            return ConsentDecision.DENY
+        }
 
         val id = nextId.getAndIncrement()
+        Log.i(LOG_TAG, "requestClientPairing('$clientName' v${clientVersion ?: "?"}): queueing prompt id=$id")
         val deferred = CompletableDeferred<ConsentDecision>()
         val versionSuffix = clientVersion?.takeIf { it.isNotBlank() }?.let { " v$it" } ?: ""
         val request = ConsentRequest(
@@ -210,7 +215,9 @@ class AgentConsentManager @Inject constructor() {
             _pending.value = _pending.value + request
         }
 
-        val decision = withTimeoutOrNull(timeoutMs) { deferred.await() } ?: ConsentDecision.DENY
+        val raw = withTimeoutOrNull(timeoutMs) { deferred.await() }
+        val decision = raw ?: ConsentDecision.DENY
+        Log.i(LOG_TAG, "requestClientPairing('$clientName') id=$id resolved: ${if (raw == null) "TIMEOUT->DENY" else decision.toString()}")
 
         mutex.withLock {
             pendingEntries.remove(id)
@@ -263,5 +270,7 @@ class AgentConsentManager @Inject constructor() {
          * client even speak).
          */
         const val PAIRING_TOOL_NAME = "_pairing"
+
+        private const val LOG_TAG = "AgentConsent"
     }
 }

@@ -516,13 +516,16 @@ class McpServer @Inject constructor(
         // doesn't have to round-trip to DataStore.
         val persistedAllowlist = runBlocking { preferencesRepository.mcpAllowedClients.first() }
         if (clientName in persistedAllowlist) {
+            Log.i(TAG, "MCP initialize: '$clientName' in persisted allowlist (size=${persistedAllowlist.size}); skipping pairing prompt")
             if (clientName !in allowedClients) {
                 allowedClients = allowedClients + clientName
             }
         } else {
+            Log.i(TAG, "MCP initialize: '$clientName' is NEW — queueing pairing prompt (persisted allowlist size=${persistedAllowlist.size})")
             val decision = runBlocking {
                 consentManager.requestClientPairing(clientName, clientVersion)
             }
+            Log.i(TAG, "MCP initialize: pairing decision for '$clientName' = $decision")
             when (decision) {
                 ConsentDecision.ALLOW -> {
                     runBlocking { preferencesRepository.addMcpAllowedClient(clientName) }
