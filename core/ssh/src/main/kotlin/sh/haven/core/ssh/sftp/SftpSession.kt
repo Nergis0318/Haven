@@ -42,16 +42,23 @@ interface SftpSession {
     )
 
     /**
-     * Upload [input] to [destPath]. [sizeHint] is the caller's best-known
-     * total in bytes (used for progress reporting when the wire protocol does
-     * not carry a size); -1 if unknown.
+     * Upload [input] to [destPath] using [mode] (default [SftpWriteMode.OVERWRITE]).
+     * [sizeHint] is the caller's best-known total in bytes (used for progress
+     * reporting when the wire protocol does not carry a size); -1 if unknown.
      */
     suspend fun upload(
         input: InputStream,
         sizeHint: Long,
         destPath: String,
+        mode: SftpWriteMode = SftpWriteMode.OVERWRITE,
         onBytes: (transferred: Long, total: Long) -> Unit,
     )
+
+    /**
+     * The server-side home directory for the authenticated user. Cheap on
+     * SFTP (returned during channel handshake); cached after the first call.
+     */
+    suspend fun home(): String
 
     /**
      * Open a remote file as an [InputStream], optionally starting from
@@ -69,3 +76,12 @@ interface SftpSession {
 
 /** Iterator-style verdict returned by [SftpSession.list] callbacks. */
 enum class ListResult { CONTINUE, BREAK }
+
+/**
+ * Write mode for [SftpSession.upload].
+ *
+ * - [OVERWRITE]: replace any existing destination file (the default).
+ * - [RESUME]: append to an existing destination, skipping the matching prefix
+ *   bytes from [input] — used to continue an interrupted transfer.
+ */
+enum class SftpWriteMode { OVERWRITE, RESUME }

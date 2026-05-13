@@ -66,7 +66,7 @@ class SftpTransport(
         destPath: String,
         onBytes: (Long, Long) -> Unit,
     ) {
-        sessionProvider().upload(input, sizeHint, destPath, onBytes)
+        sessionProvider().upload(input, sizeHint, destPath, onBytes = onBytes)
     }
 
     override suspend fun download(
