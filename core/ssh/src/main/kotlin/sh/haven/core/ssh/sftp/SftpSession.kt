@@ -72,6 +72,14 @@ interface SftpSession {
     suspend fun rm(path: String)
     suspend fun rename(from: String, to: String)
     suspend fun chmod(path: String, mode: Int)
+
+    /**
+     * Close the underlying SFTP channel. After this returns, [isConnected]
+     * is `false` and the channel reference held by [sh.haven.core.ssh.SshSessionManager]
+     * (if any) is left dangling — the next `openSftpSession` call on that
+     * manager observes the dead channel and opens a fresh one.
+     */
+    fun close()
 }
 
 /** Iterator-style verdict returned by [SftpSession.list] callbacks. */

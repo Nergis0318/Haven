@@ -129,6 +129,14 @@ internal class JschSftpSession(private val channel: ChannelSftp) : SftpSession {
         translatingJschErrors { channel.chmod(mode, path) }
     }
 
+    override fun close() {
+        try {
+            channel.disconnect()
+        } catch (_: Exception) {
+            // best effort
+        }
+    }
+
     private fun lambdaMonitor(
         sizeHint: Long,
         onBytes: (transferred: Long, total: Long) -> Unit,
