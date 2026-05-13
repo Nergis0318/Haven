@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
 import sh.haven.core.data.terminal.ScrollbackRing
+import sh.haven.core.ssh.sftp.JschSftpSession
+import sh.haven.core.ssh.sftp.SftpSession
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -281,6 +283,16 @@ class SshSessionManager @Inject constructor(
         }
         return channel
     }
+
+    /**
+     * Open (or reuse) an [SftpSession] for [profileId] — the Haven-internal
+     * facade over JSch's `ChannelSftp`. Callers in feature- and app-modules
+     * use this instead of [openSftpForProfile] so they do not import JSch
+     * types directly. Backed by the same channel that [openSftpForProfile]
+     * caches, so the two return semantically the same session.
+     */
+    fun openSftpSession(profileId: String): SftpSession? =
+        openSftpForProfile(profileId)?.let { JschSftpSession(it) }
 
     /**
      * Find a connected [SshClient] for this profile. Used by file-transfer
