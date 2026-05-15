@@ -110,6 +110,13 @@ fun ConnectionEditDialog(
      */
     embeddedCloudflareTunnel: sh.haven.core.data.db.entities.TunnelConfig? = null,
     /**
+     * Whether [existing] currently carries the MCP reverse-tunnel
+     * port-forward rule (`-R 8730:127.0.0.1:8730`). Drives the initial
+     * state of the SSH "Expose MCP server" toggle; the resolved value is
+     * handed back through [onSave]'s third argument.
+     */
+    mcpReverseTunnelEnabled: Boolean = false,
+    /**
      * Opens the Tunnels screen. When the preselect is non-null, the
      * destination should auto-open its Add dialog with that type
      * pre-selected. Used by the Route-through dropdown's quick-add
@@ -135,8 +142,10 @@ fun ConnectionEditDialog(
      * upsert a hidden tunnel row owned by it", null means "save the
      * profile and drop any embedded tunnel previously owned by it".
      * Wired via [ConnectionsViewModel.saveProfileWithEmbeddedCloudflareTunnel].
+     * The third argument is the MCP reverse-tunnel toggle state, reconciled
+     * into a port-forward rule by the screen.
      */
-    onSave: (ConnectionProfile, EmbeddedCloudflareTunnelInput?) -> Unit,
+    onSave: (ConnectionProfile, EmbeddedCloudflareTunnelInput?, Boolean) -> Unit,
 ) {
     // Transport dropdown maps to: connectionType + useMosh + useEternalTerminal
     val initialTransport = when {
@@ -250,6 +259,9 @@ fun ConnectionEditDialog(
     var postLoginBeforeSessionManager by rememberSaveable { mutableStateOf(existing?.postLoginBeforeSessionManager ?: true) }
     var disableAltScreen by rememberSaveable { mutableStateOf(existing?.disableAltScreen ?: false) }
     var useAndroidShell by rememberSaveable { mutableStateOf(existing?.useAndroidShell ?: false) }
+    // Backed by a port-forward rule, not a profile field — see onSave's
+    // third argument and ConnectionsViewModel.reconcileMcpReverseTunnel.
+    var mcpReverseTunnel by rememberSaveable { mutableStateOf(mcpReverseTunnelEnabled) }
     var forwardAgent by rememberSaveable { mutableStateOf(existing?.forwardAgent ?: false) }
     var addressFamily by rememberSaveable { mutableStateOf(existing?.addressFamily ?: "AUTO") }
     var selectedSessionManager by rememberSaveable { mutableStateOf(existing?.sessionManager) }
@@ -304,6 +316,7 @@ fun ConnectionEditDialog(
         title = { Text(title) },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                ConnectionSection(stringResource(R.string.connections_section_general))
                 // Transport selector. LOCAL is back in the list (was briefly
                 // removed in v5.24.52 because the main list filtered Local
                 // profiles out, making the "+" → Local flow a dead-end).
@@ -487,14 +500,12 @@ fun ConnectionEditDialog(
                 }
 
                 if (connectionType == "LOCAL") {
+                    ConnectionSection(stringResource(R.string.connections_section_local_shell))
                     Text(
                         if (useAndroidShell) {
-                            "Runs the native Android shell (/system/bin/sh). " +
-                                "Access Android commands, file system, and root (if available)."
+                            stringResource(R.string.connections_local_shell_android_desc)
                         } else {
-                            "Runs an Alpine Linux shell locally via PRoot. " +
-                                "Downloads a minimal rootfs (~4MB) on first use. " +
-                                "No root or network connection needed."
+                            stringResource(R.string.connections_local_shell_proot_desc)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -515,6 +526,7 @@ fun ConnectionEditDialog(
                         )
                     }
                 } else if (connectionType == "RCLONE") {
+                    ConnectionSection(stringResource(R.string.connections_section_cloud_storage))
                     val providerOptions = listOf(
                         "drive" to "Google Drive",
                         "dropbox" to "Dropbox",
@@ -535,7 +547,7 @@ fun ConnectionEditDialog(
                     ) {
                         OutlinedTextField(
                             value = providerOptions.firstOrNull { it.first == rcloneProvider }?.second
-                                ?: rcloneProvider.ifEmpty { "Select provider..." },
+                                ?: rcloneProvider.ifEmpty { stringResource(R.string.connections_dropdown_select_provider) },
                             onValueChange = {},
                             readOnly = true,
                             label = { Text(stringResource(R.string.connections_field_provider)) },
@@ -565,11 +577,12 @@ fun ConnectionEditDialog(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Sign in via your browser when you first connect.",
+                        stringResource(R.string.connections_helper_rclone_signin),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else if (connectionType == "VNC") {
+                    ConnectionSection(stringResource(R.string.connections_section_vnc))
                     // VNC: same shape as RDP — tunnel toggle first (it changes
                     // what Host means), then connection fields. Mirrors the
                     // RDP block below for consistency (see #107 follow-up).
@@ -597,7 +610,7 @@ fun ConnectionEditDialog(
                                 onExpandedChange = { sshExpanded = it },
                             ) {
                                 OutlinedTextField(
-                                    value = selectedSsh?.label ?: "Select SSH connection",
+                                    value = selectedSsh?.label ?: stringResource(R.string.connections_dropdown_select_ssh),
                                     onValueChange = {},
                                     readOnly = true,
                                     label = { Text(stringResource(R.string.connections_field_ssh_connection)) },
@@ -623,7 +636,7 @@ fun ConnectionEditDialog(
                             }
                         } else {
                             Text(
-                                "Add an SSH connection first",
+                                stringResource(R.string.connections_helper_add_ssh_first),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )
@@ -638,7 +651,7 @@ fun ConnectionEditDialog(
                         supportingText = if (vncSshForward) {
                             {
                                 Text(
-                                    "Where the VNC server is reachable from the SSH server — usually 127.0.0.1 if they're the same machine (wayvnc etc. bind loopback only).",
+                                    stringResource(R.string.connections_helper_vnc_host_via_ssh),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
@@ -674,15 +687,15 @@ fun ConnectionEditDialog(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Leave username blank for classic VncAuth (8-char password). Fill username for VeNCrypt (wayvnc, TigerVNC) — supports longer passwords and TLS encryption.",
+                        stringResource(R.string.connections_helper_vnc_auth),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(8.dp))
                     val depthOptions = listOf(
-                        "BPP_24_TRUE" to "24-bit colour (best quality)",
-                        "BPP_16_TRUE" to "16-bit colour (faster)",
-                        "BPP_8_INDEXED" to "256 colours (lowest bandwidth)",
+                        "BPP_24_TRUE" to stringResource(R.string.connections_vnc_depth_24),
+                        "BPP_16_TRUE" to stringResource(R.string.connections_vnc_depth_16),
+                        "BPP_8_INDEXED" to stringResource(R.string.connections_vnc_depth_8),
                     )
                     var depthExpanded by remember { mutableStateOf(false) }
                     val selectedDepth = depthOptions.firstOrNull { it.first == vncColorDepth } ?: depthOptions.first()
@@ -716,6 +729,7 @@ fun ConnectionEditDialog(
                         }
                     }
                 } else if (connectionType == "RDP") {
+                    ConnectionSection(stringResource(R.string.connections_section_rdp))
                     // RDP: SSH tunnel toggle first (it changes what Host means),
                     // then host, port, username, domain.
                     FilterChip(
@@ -751,7 +765,7 @@ fun ConnectionEditDialog(
                                 onExpandedChange = { sshExpanded = it },
                             ) {
                                 OutlinedTextField(
-                                    value = selectedSsh?.label ?: "Select SSH connection",
+                                    value = selectedSsh?.label ?: stringResource(R.string.connections_dropdown_select_ssh),
                                     onValueChange = {},
                                     readOnly = true,
                                     label = { Text(stringResource(R.string.connections_field_ssh_connection)) },
@@ -777,7 +791,7 @@ fun ConnectionEditDialog(
                             }
                         } else {
                             Text(
-                                "Add an SSH connection first",
+                                stringResource(R.string.connections_helper_add_ssh_first),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )
@@ -792,7 +806,7 @@ fun ConnectionEditDialog(
                         supportingText = if (rdpSshForward) {
                             {
                                 Text(
-                                    "Where the RDP server is reachable from the SSH server — usually 127.0.0.1 if they're the same machine.",
+                                    stringResource(R.string.connections_helper_rdp_host_via_ssh),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
@@ -844,12 +858,12 @@ fun ConnectionEditDialog(
                             onCheckedChange = { rdpUseNla = it },
                         )
                         Text(
-                            "Network Level Authentication (NLA)",
+                            stringResource(R.string.connections_toggle_rdp_nla),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
                     Text(
-                        "Default on. Turn off if the server rejects Haven's NLA (some Windows Server 2025 setups — the server must have \"Require NLA\" disabled for SSL-only to connect).",
+                        stringResource(R.string.connections_helper_rdp_nla),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -862,9 +876,9 @@ fun ConnectionEditDialog(
                     // is the safe-everywhere 16-bit and users pick
                     // 24/32 if they know their server type.
                     val rdpDepthOptions = listOf(
-                        16 to "16-bit (default — works everywhere, lower fidelity)",
-                        24 to "24-bit (xrdp — Windows resets the connection)",
-                        32 to "32-bit (Windows — black screen on xrdp)",
+                        16 to stringResource(R.string.connections_rdp_depth_16),
+                        24 to stringResource(R.string.connections_rdp_depth_24),
+                        32 to stringResource(R.string.connections_rdp_depth_32),
                     )
                     var rdpDepthExpanded by remember { mutableStateOf(false) }
                     val selectedRdpDepth = rdpDepthOptions.firstOrNull { it.first == rdpColorDepth }
@@ -899,6 +913,7 @@ fun ConnectionEditDialog(
                         }
                     }
                 } else if (connectionType == "SMB") {
+                    ConnectionSection(stringResource(R.string.connections_section_smb))
                     // SMB: host (with discovery), share, username, port, password, domain, SSH tunnel
                     val filteredSmbHosts = remember(discoveredSmbHosts, host) {
                         val prefix = host.lowercase()
@@ -1107,7 +1122,7 @@ fun ConnectionEditDialog(
                                 onExpandedChange = { sshExpanded = it },
                             ) {
                                 OutlinedTextField(
-                                    value = selectedSsh?.label ?: "Select SSH connection",
+                                    value = selectedSsh?.label ?: stringResource(R.string.connections_dropdown_select_ssh),
                                     onValueChange = {},
                                     readOnly = true,
                                     label = { Text(stringResource(R.string.connections_field_ssh_connection)) },
@@ -1133,13 +1148,14 @@ fun ConnectionEditDialog(
                             }
                         } else {
                             Text(
-                                "Add an SSH connection first",
+                                stringResource(R.string.connections_helper_add_ssh_first),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
                     }
                 } else if (connectionType == "SSH") {
+                    ConnectionSection(stringResource(R.string.connections_section_connection))
                     // Discovered hosts — filter by typed prefix
                     val filteredHosts = remember(discoveredHosts, host) {
                         val prefix = host.lowercase()
@@ -1373,6 +1389,7 @@ fun ConnectionEditDialog(
                     }
 
 
+                    ConnectionSection(stringResource(R.string.connections_section_terminal))
                     // Session manager
                     Spacer(Modifier.height(4.dp))
                     val defaultSessionLabel = stringResource(
@@ -1436,7 +1453,7 @@ fun ConnectionEditDialog(
                     if (selectedTransport == "MOSH") {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Requires mosh-server on remote host",
+                            stringResource(R.string.connections_helper_mosh_required),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1456,7 +1473,10 @@ fun ConnectionEditDialog(
                     if (selectedTransport == "ET") {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Requires etserver on remote host (port ${etPort.ifBlank { "2022" }})",
+                            stringResource(
+                                R.string.connections_helper_et_required,
+                                etPort.ifBlank { "2022" },
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1485,7 +1505,7 @@ fun ConnectionEditDialog(
                         supportingText = {
                             Text(
                                 if (postLoginCommand.isNotBlank() && postLoginBeforeSessionManager) {
-                                    "Runs before session manager starts."
+                                    stringResource(R.string.connections_helper_run_before_session_manager)
                                 } else {
                                     stringResource(R.string.connections_helper_post_login)
                                 },
@@ -1515,11 +1535,11 @@ fun ConnectionEditDialog(
                     FilterChip(
                         selected = tunnelOnly,
                         onClick = { tunnelOnly = !tunnelOnly },
-                        label = { Text("Tunnel-only (no terminal)") },
+                        label = { Text(stringResource(R.string.connections_toggle_tunnel_only)) },
                     )
                     if (tunnelOnly) {
                         Text(
-                            "Bring up SSH for port forwards only — no terminal session is opened.",
+                            stringResource(R.string.connections_helper_tunnel_only),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1533,19 +1553,22 @@ fun ConnectionEditDialog(
                     // tunnel-only profile holding port forwards alive get
                     // the knobs here.
                     Spacer(Modifier.height(8.dp))
-                    Text("Reconnect", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        stringResource(R.string.connections_section_reconnect),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
                     Spacer(Modifier.height(4.dp))
                     FilterChip(
                         selected = autoReconnect,
                         onClick = { autoReconnect = !autoReconnect },
-                        label = { Text("Auto-reconnect on disconnect") },
+                        label = { Text(stringResource(R.string.connections_toggle_auto_reconnect)) },
                     )
                     if (autoReconnect) {
                         Spacer(Modifier.height(4.dp))
                         OutlinedTextField(
                             value = reconnectMaxAttempts,
                             onValueChange = { v -> reconnectMaxAttempts = v.filter { c -> c.isDigit() }.take(4) },
-                            label = { Text("Max attempts (0 = unlimited)") },
+                            label = { Text(stringResource(R.string.connections_field_reconnect_max_attempts)) },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.fillMaxWidth(),
@@ -1555,7 +1578,7 @@ fun ConnectionEditDialog(
                     FilterChip(
                         selected = reconnectOnNetworkChange,
                         onClick = { reconnectOnNetworkChange = !reconnectOnNetworkChange },
-                        label = { Text("Reconnect on network change") },
+                        label = { Text(stringResource(R.string.connections_toggle_reconnect_on_network_change)) },
                     )
 
                     // File transport picker — Auto / SFTP / SCP (legacy)
@@ -1619,13 +1642,33 @@ fun ConnectionEditDialog(
                         )
                     }
 
+                    // MCP reverse tunnel — only meaningful for plain SSH
+                    // (mosh/ET can't carry an SSH -R forward). Backed by a
+                    // port-forward rule reconciled on save, not a profile
+                    // field.
+                    if (selectedTransport == "SSH") {
+                        Spacer(Modifier.height(4.dp))
+                        FilterChip(
+                            selected = mcpReverseTunnel,
+                            onClick = { mcpReverseTunnel = !mcpReverseTunnel },
+                            label = { Text(stringResource(R.string.connections_toggle_mcp_tunnel)) },
+                        )
+                        if (mcpReverseTunnel) {
+                            Text(
+                                stringResource(R.string.connections_helper_mcp_tunnel),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
                     // Per-profile terminal colour scheme (#144). Null on the
                     // profile means "inherit the global setting"; setting a
                     // scheme here overrides only this profile so users can
                     // distinguish servers by background colour at a glance.
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Terminal colour scheme",
+                        stringResource(R.string.connections_field_color_scheme),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(Modifier.height(4.dp))
@@ -1672,9 +1715,10 @@ fun ConnectionEditDialog(
                             )
                         }
                         Spacer(Modifier.width(12.dp))
-                        Text(activeSchemeEnum?.label ?: "Use default")
+                        Text(activeSchemeEnum?.label ?: stringResource(R.string.connections_color_scheme_inherit))
                     }
 
+                    ConnectionSection(stringResource(R.string.connections_section_authentication))
                     // Agent forwarding toggle (OpenSSH ForwardAgent)
                     Spacer(Modifier.height(4.dp))
                     FilterChip(
@@ -1738,7 +1782,7 @@ fun ConnectionEditDialog(
                             onExpandedChange = { keyExpanded = it },
                         ) {
                             OutlinedTextField(
-                                value = selectedKey?.label ?: "Any (try all keys)",
+                                value = selectedKey?.label ?: stringResource(R.string.connections_ssh_key_any),
                                 onValueChange = {},
                                 readOnly = true,
                                 label = { Text(stringResource(R.string.connections_field_ssh_key)) },
@@ -1786,13 +1830,7 @@ fun ConnectionEditDialog(
                     // the only way to edit was to delete and recreate the
                     // profile — #104.
                     if (vncSettingsStored) {
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            "Saved VNC settings",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(4.dp))
+                        ConnectionSection(stringResource(R.string.connections_section_embedded_vnc))
                         OutlinedTextField(
                             value = vncSavedPort,
                             onValueChange = { vncSavedPort = it.filter { c -> c.isDigit() } },
@@ -1833,9 +1871,9 @@ fun ConnectionEditDialog(
                         // terminal's quick dialog had no way to switch to
                         // 256-colour mode (#107 follow-up from Nesos-ita).
                         val savedDepthOptions = listOf(
-                            "BPP_24_TRUE" to "24-bit colour (best quality)",
-                            "BPP_16_TRUE" to "16-bit colour (faster)",
-                            "BPP_8_INDEXED" to "256 colours (lowest bandwidth)",
+                            "BPP_24_TRUE" to stringResource(R.string.connections_vnc_depth_24),
+                            "BPP_16_TRUE" to stringResource(R.string.connections_vnc_depth_16),
+                            "BPP_8_INDEXED" to stringResource(R.string.connections_vnc_depth_8),
                         )
                         var savedDepthExpanded by remember { mutableStateOf(false) }
                         val selectedSavedDepth = savedDepthOptions.firstOrNull { it.first == vncColorDepth }
@@ -1878,6 +1916,7 @@ fun ConnectionEditDialog(
                 } else {
                     // --- Reticulum connection form ---
                     // Order: gateway config → scan → destination hash
+                    ConnectionSection(stringResource(R.string.connections_section_reticulum))
 
                     // 1. Gateway configuration
                     FilterChip(
@@ -1926,8 +1965,8 @@ fun ConnectionEditDialog(
                         sh.haven.core.ui.PasswordField(
                             value = rnsPassphrase,
                             onValueChange = { rnsPassphrase = it },
-                            label = "Passphrase",
-                            placeholder = "IFAC passphrase (optional)",
+                            label = stringResource(R.string.connections_field_passphrase),
+                            placeholder = stringResource(R.string.connections_hint_ifac_passphrase),
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -2036,7 +2075,7 @@ fun ConnectionEditDialog(
                 // tunnelConfigId. The connect path enforces tunnel >
                 // jump > proxy precedence.
                 if (connectionType in setOf("SSH", "VNC", "RDP", "SMB")) {
-                    Spacer(Modifier.height(4.dp))
+                    ConnectionSection(stringResource(R.string.connections_section_routing))
                     var proxyExpanded by remember { mutableStateOf(false) }
                     val selectedTunnel = tunnelConfigs.firstOrNull { it.id == tunnelConfigId }
                     val noneDirectLabel = stringResource(R.string.connections_dropdown_none_direct)
@@ -2165,7 +2204,7 @@ fun ConnectionEditDialog(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            "Manage tunnels…",
+                                            stringResource(R.string.connections_action_manage_tunnels),
                                             color = MaterialTheme.colorScheme.primary,
                                         )
                                     },
@@ -2202,7 +2241,7 @@ fun ConnectionEditDialog(
                             }
                         }
                         Text(
-                            "Routing through a Cloudflare Tunnel connector. The host above is used as the tunnel hostname; port doesn't apply (the connector decides the upstream SSH target).",
+                            stringResource(R.string.connections_helper_cloudflare_routing),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -2314,11 +2353,7 @@ fun ConnectionEditDialog(
                 // TCP host — skipped for LOCAL (no host), RCLONE (its own
                 // protocol), and RETICULUM (mesh, not TCP).
                 if (connectionType !in setOf("LOCAL", "RCLONE", "RETICULUM")) {
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        stringResource(R.string.connections_section_port_knock),
-                        style = MaterialTheme.typography.labelLarge,
-                    )
+                    ConnectionSection(stringResource(R.string.connections_section_port_knock))
                     val parsedKnock = KnockSequence.parse(
                         portKnockSequence,
                         portKnockDelayMs.toIntOrNull() ?: KnockSequence.DEFAULT_DELAY_MS,
@@ -2639,7 +2674,10 @@ fun ConnectionEditDialog(
                             jumpDestination = cfJumpDestination,
                         )
                     } else null
-                    onSave(profile, cfInput)
+                    // MCP reverse tunnel only applies to plain SSH; for
+                    // other transports always report false so the screen
+                    // tears down any stale rule.
+                    onSave(profile, cfInput, mcpReverseTunnel && selectedTransport == "SSH")
                 },
                 enabled = canSave,
             ) {
@@ -2663,6 +2701,22 @@ fun ConnectionEditDialog(
             },
         )
     }
+}
+
+/**
+ * Section heading inside [ConnectionEditDialog]. Mirrors
+ * `feature.settings.SettingsScreen`'s `SettingsSection` — uppercase
+ * `labelMedium` in the primary colour — so the connection form reads as
+ * labelled groups rather than one long scroll.
+ */
+@Composable
+private fun ConnectionSection(title: String) {
+    Text(
+        text = title.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+    )
 }
 
 /**

@@ -331,4 +331,54 @@
     <string name="connections_knock_host_blank">Host is blank</string>
     <string name="connections_knock_success">Sent %1$d knocks in %2$d ms</string>
     <string name="connections_knock_failed">Failed after %1$d ms: %2$s</string>
+
+    <!-- Section headings in the connection edit dialog. -->
+    <string name="connections_section_general">General</string>
+    <string name="connections_section_local_shell">Local shell</string>
+    <string name="connections_section_cloud_storage">Cloud storage</string>
+    <string name="connections_section_vnc">VNC settings</string>
+    <string name="connections_section_rdp">RDP settings</string>
+    <string name="connections_section_smb">SMB settings</string>
+    <string name="connections_section_connection">Connection</string>
+    <string name="connections_section_terminal">Terminal</string>
+    <string name="connections_section_authentication">Authentication</string>
+    <string name="connections_section_embedded_vnc">Embedded VNC</string>
+    <string name="connections_section_reticulum">Reticulum</string>
+    <string name="connections_section_routing">Routing</string>
+
+    <!-- MCP reverse-tunnel toggle (SSH section). -->
+    <string name="connections_toggle_mcp_tunnel">Expose Haven\'s MCP server</string>
+    <string name="connections_helper_mcp_tunnel">Adds a -R 8730 → 127.0.0.1:8730 rule so an MCP client on this server can reach Haven at http://127.0.0.1:8730/mcp. Applied on connect.</string>
+
+    <!-- Connection edit dialog: remaining field labels, toggles and helper text. -->
+    <string name="connections_section_reconnect">Reconnect</string>
+    <string name="connections_local_shell_android_desc">Runs the native Android shell (/system/bin/sh). Access Android commands, file system, and root (if available).</string>
+    <string name="connections_local_shell_proot_desc">Runs an Alpine Linux shell locally via PRoot. Downloads a minimal rootfs (~4MB) on first use. No root or network connection needed.</string>
+    <string name="connections_dropdown_select_provider">Select provider…</string>
+    <string name="connections_helper_rclone_signin">Sign in via your browser when you first connect.</string>
+    <string name="connections_dropdown_select_ssh">Select SSH connection</string>
+    <string name="connections_helper_add_ssh_first">Add an SSH connection first</string>
+    <string name="connections_toggle_rdp_nla">Network Level Authentication (NLA)</string>
+    <string name="connections_helper_mosh_required">Requires mosh-server on remote host</string>
+    <string name="connections_helper_et_required">Requires etserver on remote host (port %1$s)</string>
+    <string name="connections_helper_run_before_session_manager">Runs before session manager starts.</string>
+    <string name="connections_toggle_tunnel_only">Tunnel-only (no terminal)</string>
+    <string name="connections_helper_tunnel_only">Bring up SSH for port forwards only — no terminal session is opened.</string>
+    <string name="connections_toggle_auto_reconnect">Auto-reconnect on disconnect</string>
+    <string name="connections_field_reconnect_max_attempts">Max attempts (0 = unlimited)</string>
+    <string name="connections_toggle_reconnect_on_network_change">Reconnect on network change</string>
+    <string name="connections_field_passphrase">Passphrase</string>
+    <string name="connections_hint_ifac_passphrase">IFAC passphrase (optional)</string>
+    <string name="connections_helper_vnc_host_via_ssh">Where the VNC server is reachable from the SSH server — usually 127.0.0.1 if they\'re the same machine (wayvnc etc. bind loopback only).</string>
+    <string name="connections_helper_vnc_auth">Leave username blank for classic VncAuth (8-char password). Fill username for VeNCrypt (wayvnc, TigerVNC) — supports longer passwords and TLS encryption.</string>
+    <string name="connections_helper_rdp_host_via_ssh">Where the RDP server is reachable from the SSH server — usually 127.0.0.1 if they\'re the same machine.</string>
+    <string name="connections_helper_rdp_nla">Default on. Turn off if the server rejects Haven\'s NLA (some Windows Server 2025 setups — the server must have \"Require NLA\" disabled for SSL-only to connect).</string>
+    <string name="connections_action_manage_tunnels">Manage tunnels…</string>
+    <string name="connections_helper_cloudflare_routing">Routing through a Cloudflare Tunnel connector. The host above is used as the tunnel hostname; port doesn\'t apply (the connector decides the upstream SSH target).</string>
+    <string name="connections_vnc_depth_24">24-bit colour (best quality)</string>
+    <string name="connections_vnc_depth_16">16-bit colour (faster)</string>
+    <string name="connections_vnc_depth_8">256 colours (lowest bandwidth)</string>
+    <string name="connections_rdp_depth_16">16-bit (default — works everywhere, lower fidelity)</string>
+    <string name="connections_rdp_depth_24">24-bit (xrdp — Windows resets the connection)</string>
+    <string name="connections_rdp_depth_32">32-bit (Windows — black screen on xrdp)</string>
 </resources>
