@@ -871,6 +871,9 @@ fun TerminalScreen(
                                 onScrollControllerAvailable = {
                                     viewModel.terminalSessionRegistry.setScrollController(activeTab.sessionId, it)
                                 },
+                                onGestureInjectorReady = {
+                                    viewModel.terminalSessionRegistry.setGestureInjector(activeTab.sessionId, it)
+                                },
                                 onTerminalDoubleTap = {
                                     val window = (view.context as? Activity)?.window ?: return@HavenTerminal
                                     val controller = WindowCompat.getInsetsController(window, view)

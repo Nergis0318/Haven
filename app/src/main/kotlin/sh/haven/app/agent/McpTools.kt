@@ -344,7 +344,7 @@ internal class McpTools(
         ) { args -> readTerminalScrollback(args) },
 
         "read_terminal_snapshot" to ToolHandler(
-            description = "Return a structured snapshot of an active terminal session: dimensions, cursor row/col, terminal title, scrollback line count, and the visible-screen lines as plain text (with `softWrapped` flag per line, and optional OSC 133 semantic segments). Use list_sessions to discover sessionIds. Distinct from read_terminal_scrollback, which returns raw bytes; this is the parsed view useful for cursor-aware tooling and prompt detection.",
+            description = "Return a structured snapshot of an active terminal session: dimensions, cursor row/col, terminal title, scrollback line count + current scrollbackPosition, the remote-driven terminal modes (mouseMode / activeMouseMode 1000|1002|1003 / bracketPasteMode), an oscEvents object with the last-seen OSC 52 clipboard-set / OSC 7 cwd / OSC 8 hyperlink / OSC 9|777 notification, and the visible-screen lines as plain text (with `softWrapped` flag per line, and optional OSC 133 semantic segments). Use list_sessions to discover sessionIds. Distinct from read_terminal_scrollback, which returns raw bytes; this is the parsed view useful for cursor-aware tooling, prompt detection, and asserting OSC/mouse-mode round-trips.",
             inputSchema = JSONObject().apply {
                 put("type", "object")
                 put("properties", JSONObject().apply {
@@ -547,6 +547,29 @@ internal class McpTools(
             },
         ) { args -> sendTerminalInput(args) },
 
+        "feed_terminal_output" to ToolHandler(
+            description = "Inject raw bytes into a terminal session's OUTPUT stream — as if they had arrived from the remote — running the exact pipeline the live data callback uses (OSC scan → mouse-mode scan → emulator). Distinct from send_terminal_input, which sends to the PTY input as if typed. Use this to deterministically exercise output-side parsing without a cooperating remote: e.g. feed an OSC 52 sequence to test the clipboard round-trip, a DECSET 1000/1002/1003 to flip mouseMode, an OSC 8 hyperlink, or a partial escape split across two calls (the OSC scanner keeps state between calls). Provide exactly one of `text` (UTF-8) or `bytesBase64` (for control bytes / ESC). Hard cap 65536 bytes per call. Not supported for headless agent shells (no UI tab) — returns an error. Returns { sessionId, bytesFed }.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("sessionId", JSONObject().apply { put("type", "string"); put("description", "Active session ID with an attached terminal tab.") })
+                    put("text", JSONObject().apply { put("type", "string"); put("description", "UTF-8 text to inject as output. Mutually exclusive with bytesBase64.") })
+                    put("bytesBase64", JSONObject().apply { put("type", "string"); put("description", "Base64-encoded raw bytes to inject — use this for escape sequences (ESC = \\u001b) and other control bytes. Mutually exclusive with text.") })
+                })
+                put("required", JSONArray().put("sessionId"))
+            },
+            consentLevel = ConsentLevel.EVERY_CALL,
+            summarise = { args ->
+                val n = if (args.has("text")) {
+                    args.optString("text").toByteArray(Charsets.UTF_8).size
+                } else {
+                    runCatching { android.util.Base64.decode(args.optString("bytesBase64"), android.util.Base64.DEFAULT).size }
+                        .getOrDefault(0)
+                }
+                "Inject $n bytes into the terminal OUTPUT stream of session ${args.optString("sessionId").take(8)}…? (renders as if sent by the remote — can set the clipboard via OSC 52)"
+            },
+        ) { args -> feedTerminalOutput(args) },
+
         "write_clipboard" to ToolHandler(
             description = "Set the system clipboard's primary plain-text content. Replaces whatever's currently on the clipboard. Useful for priming the clipboard before triggering a terminal paste.",
             inputSchema = JSONObject().apply {
@@ -691,6 +714,37 @@ internal class McpTools(
                 else "Scroll terminal ${-n} lines toward live screen?"
             },
         ) { args -> scrollTerminal(args) },
+
+        "drag_terminal" to ToolHandler(
+            description = "Drive a synthetic touch-drag through the terminal's REAL pointer pipeline — the same awaitEachGesture handler a physical finger feeds. Unlike start_selection / extend_selection / drag_selection_to, which mutate the selection model directly, this exercises the actual gesture code: long-press classification, drag-extend, edge-zone detection, and the held-still auto-repeat edge-scroll ticker. The gesture is: touch-down at path[0]; hold still for pressMs (long enough for the long-press selection timeout, ~500ms, to fire); move through path[1..] one stepMs apart; hold still at path.last() for holdMs (the window the edge-scroll ticker runs in); lift. Rows are viewport-relative; out-of-viewport rows (e.g. -3, or rows beyond the bottom) still map to valid pixels so a path can target the top/bottom edge zone. Blocks until the gesture completes (~pressMs + path*stepMs + holdMs). Requires the session's terminal tab to be the foreground tab (the gesture injector mounts with the Composable). Returns { sessionId, cells, approxDurationMs }. Verify the effect with get_selection + read_terminal_snapshot afterwards.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("sessionId", JSONObject().apply { put("type", "string"); put("description", "Active session ID; its terminal tab must be the foreground tab.") })
+                    put("path", JSONObject().apply {
+                        put("type", "array")
+                        put("description", "Ordered cells to traverse. Each element is { row, col } (viewport-relative; row may be negative or >= rows to reach the edge zones). path[0] = touch-down, last = lift. Must be non-empty; a single cell is a long-press with no drag.")
+                        put("items", JSONObject().apply {
+                            put("type", "object")
+                            put("properties", JSONObject().apply {
+                                put("row", JSONObject().apply { put("type", "integer") })
+                                put("col", JSONObject().apply { put("type", "integer") })
+                            })
+                            put("required", JSONArray().put("row").put("col"))
+                        })
+                    })
+                    put("pressMs", JSONObject().apply { put("type", "integer"); put("description", "Initial still-hold before the first move. Default 900. Must clear the long-press timeout (~500ms).") })
+                    put("stepMs", JSONObject().apply { put("type", "integer"); put("description", "Delay between successive move events. Default 30.") })
+                    put("holdMs", JSONObject().apply { put("type", "integer"); put("description", "Still-hold at the final cell before lifting — the edge-scroll ticker's window. Default 1000.") })
+                })
+                put("required", JSONArray().put("sessionId").put("path"))
+            },
+            consentLevel = ConsentLevel.EVERY_CALL,
+            summarise = { args ->
+                val n = args.optJSONArray("path")?.length() ?: 0
+                "Inject a synthetic $n-cell touch-drag into the terminal of session ${args.optString("sessionId").take(8)}…? (drives the real gesture handler)"
+            },
+        ) { args -> dragTerminal(args) },
 
         "open_developer_settings" to ToolHandler(
             description = "Open Android's Developer Options screen via ACTION_APPLICATION_DEVELOPMENT_SETTINGS so the user can flip Wireless debugging or other developer toggles. Tap-equivalent — the screen opens but no setting is changed without the user touching it.",
@@ -1855,6 +1909,30 @@ internal class McpTools(
             put("terminalTitle", snap.terminalTitle)
             put("scrollbackSize", snap.scrollbackSize)
             put("scrollbackPosition", scrollPos)
+            // Remote-driven terminal modes, scanned from the output stream
+            // by MouseModeTracker. Null flows (headless agent shells) report
+            // the inactive defaults.
+            put("mouseMode", entry.mouseMode?.value ?: false)
+            put("activeMouseMode", entry.activeMouseMode?.value ?: JSONObject.NULL)
+            put("bracketPasteMode", entry.bracketPasteMode?.value ?: false)
+            // Last-seen OSC events from this tab's OscHandler — useful for
+            // asserting OSC 52 / 7 / 8 / 9 round-trips. Null when no event
+            // of that type has been seen (or no OSC handler is wired).
+            val osc = entry.oscHandler
+            put("oscEvents", JSONObject().apply {
+                put("lastClipboardSet", osc?.lastClipboardSet ?: JSONObject.NULL)
+                put("lastCwd", osc?.lastCwd ?: JSONObject.NULL)
+                put("lastHyperlink", osc?.lastHyperlink ?: JSONObject.NULL)
+                put(
+                    "lastNotification",
+                    osc?.lastNotification?.let { (title, body) ->
+                        JSONObject().apply {
+                            put("title", title)
+                            put("body", body)
+                        }
+                    } ?: JSONObject.NULL,
+                )
+            })
             put("lines", JSONArray().apply {
                 snap.lines.forEach { line ->
                     put(JSONObject().apply {
@@ -2207,6 +2285,89 @@ internal class McpTools(
         return JSONObject().apply {
             put("sessionId", sessionId)
             put("bytesSent", bytes.size)
+        }
+    }
+
+    private fun feedTerminalOutput(args: JSONObject): JSONObject {
+        val sessionId = args.optString("sessionId").ifEmpty {
+            throw McpError(-32602, "Missing required argument: sessionId")
+        }
+        val entry = requireRegistryEntry(sessionId)
+        val feed = entry.feedOutput
+            ?: throw McpError(
+                -32603,
+                "Session $sessionId has no output pipeline — feed_terminal_output is not supported for headless agent shells",
+            )
+        val hasText = args.has("text")
+        val hasB64 = args.has("bytesBase64")
+        if (hasText == hasB64) {
+            throw McpError(-32602, "Provide exactly one of: text, bytesBase64")
+        }
+        val bytes: ByteArray = if (hasText) {
+            args.optString("text").toByteArray(Charsets.UTF_8)
+        } else {
+            try {
+                android.util.Base64.decode(args.optString("bytesBase64"), android.util.Base64.DEFAULT)
+            } catch (e: IllegalArgumentException) {
+                throw McpError(-32602, "bytesBase64 is not valid base64: ${e.message}")
+            }
+        }
+        if (bytes.size > 65536) {
+            throw McpError(-32602, "payload too long: ${bytes.size} bytes (max 65536)")
+        }
+        // feedOutput is internally synchronized against the live data
+        // callback, so this is safe to call straight from the MCP thread.
+        feed(bytes, 0, bytes.size)
+        return JSONObject().apply {
+            put("sessionId", sessionId)
+            put("bytesFed", bytes.size)
+        }
+    }
+
+    private fun dragTerminal(args: JSONObject): JSONObject {
+        val sessionId = args.optString("sessionId").ifEmpty {
+            throw McpError(-32602, "Missing required argument: sessionId")
+        }
+        val entry = requireRegistryEntry(sessionId)
+        val injector = entry.gestureInjector
+            ?: throw McpError(
+                -32603,
+                "Session $sessionId has no gesture injector — its terminal tab must be the foreground tab",
+            )
+        val pathArr = args.optJSONArray("path")
+            ?: throw McpError(-32602, "Missing required argument: path")
+        if (pathArr.length() == 0) {
+            throw McpError(-32602, "path must have at least one cell")
+        }
+        if (pathArr.length() > 256) {
+            throw McpError(-32602, "path too long: ${pathArr.length()} cells (max 256)")
+        }
+        val path = ArrayList<Pair<Int, Int>>(pathArr.length())
+        for (i in 0 until pathArr.length()) {
+            val cell = pathArr.optJSONObject(i)
+                ?: throw McpError(-32602, "path[$i] must be an object { row, col }")
+            if (!cell.has("row") || !cell.has("col")) {
+                throw McpError(-32602, "path[$i] must have both row and col")
+            }
+            path.add(cell.getInt("row") to cell.getInt("col"))
+        }
+        val pressMs = if (args.has("pressMs")) args.optLong("pressMs", 900L) else 900L
+        val stepMs = if (args.has("stepMs")) args.optLong("stepMs", 30L) else 30L
+        val holdMs = if (args.has("holdMs")) args.optLong("holdMs", 1000L) else 1000L
+        if (pressMs < 0 || stepMs < 0 || holdMs < 0) {
+            throw McpError(-32602, "pressMs / stepMs / holdMs must be non-negative")
+        }
+        try {
+            injector.injectDrag(path, pressMs, stepMs, holdMs)
+        } catch (e: IllegalArgumentException) {
+            throw McpError(-32602, e.message ?: "invalid drag_terminal arguments")
+        } catch (e: IllegalStateException) {
+            throw McpError(-32603, e.message ?: "gesture injection failed")
+        }
+        return JSONObject().apply {
+            put("sessionId", sessionId)
+            put("cells", path.size)
+            put("approxDurationMs", pressMs + stepMs * (path.size - 1).coerceAtLeast(0) + holdMs)
         }
     }
 

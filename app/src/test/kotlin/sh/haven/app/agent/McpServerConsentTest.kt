@@ -89,6 +89,7 @@ class McpServerConsentTest {
             terminalSessionRegistry = sh.haven.feature.terminal.agent.TerminalSessionRegistry(),
             portKnocker = mockk<sh.haven.core.knock.PortKnocker>(relaxed = true),
             connectionLogRepository = mockk<sh.haven.core.data.repository.ConnectionLogRepository>(relaxed = true),
+            servedFileTracker = mockk<sh.haven.core.data.agent.ServedFileTracker>(relaxed = true),
         )
         return server to auditRecorder
     }
@@ -450,6 +451,7 @@ class McpServerConsentTest {
             terminalSessionRegistry = sh.haven.feature.terminal.agent.TerminalSessionRegistry(),
             portKnocker = mockk<sh.haven.core.knock.PortKnocker>(relaxed = true),
             connectionLogRepository = mockk<sh.haven.core.data.repository.ConnectionLogRepository>(relaxed = true),
+            servedFileTracker = mockk<sh.haven.core.data.agent.ServedFileTracker>(relaxed = true),
         )
 
         val responseFuture = java.util.concurrent.CompletableFuture.supplyAsync {

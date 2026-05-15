@@ -80,6 +80,7 @@ class McpWorkspaceToolsTest {
             terminalSessionRegistry = sh.haven.feature.terminal.agent.TerminalSessionRegistry(),
             portKnocker = mockk<sh.haven.core.knock.PortKnocker>(relaxed = true),
             connectionLogRepository = mockk<sh.haven.core.data.repository.ConnectionLogRepository>(relaxed = true),
+            servedFileTracker = mockk<sh.haven.core.data.agent.ServedFileTracker>(relaxed = true),
         )
         // All workspace verbs go through tools/call which is gated by
         // the dispatch-time pairing check. Initialize first so the

@@ -230,6 +230,10 @@ data class TerminalTab(
     val activeMouseMode: StateFlow<Int?>,
     val bracketPasteMode: StateFlow<Boolean>,
     val oscHandler: OscHandler,
+    /** Injects raw bytes through this tab's real output pipeline (OSC scan
+     *  → mouse-mode scan → emulator), as if received from the remote.
+     *  Used by the MCP agent's feed_terminal_output test tool. */
+    val feedOutput: (ByteArray, Int, Int) -> Unit,
     val cwd: StateFlow<String?>,
     val hyperlinkUri: StateFlow<String?>,
     val isReconnecting: StateFlow<Boolean>,
@@ -835,10 +839,16 @@ class TerminalViewModel @Inject constructor(
             val hyperlinkFlow = MutableStateFlow<String?>(null)
             oscHandler.onCwdChanged = { cwdFlow.value = it }
             oscHandler.onHyperlink = { uri -> hyperlinkFlow.value = uri }
-
-            val termSession = existingTermSession?.also {
-                // Reattach: rewire data callback to the new emulator/OSC handler
-                it.replaceDataCallback { data, offset, length ->
+            // The real output pipeline: OSC scan → mouse-mode scan →
+            // emulator. Shared by the live data callback and the agent's
+            // feed_terminal_output test injection so both go through the
+            // exact same path.
+            // Synchronized on the OSC handler: the live data callback and
+            // the agent's feed_terminal_output both route through here, and
+            // OscHandler / MouseModeTracker hold non-thread-safe scanner
+            // state. Uncontended in the common case (one reader thread).
+            val feedOutput: (ByteArray, Int, Int) -> Unit = { data, offset, length ->
+                synchronized(oscHandler) {
                     oscHandler.process(data, offset, length)
                     mouseTracker.process(oscHandler.outputBuf, 0, oscHandler.outputLen)
                     val len = oscHandler.outputLen
@@ -846,16 +856,18 @@ class TerminalViewModel @Inject constructor(
                         writeBuffer.append(oscHandler.outputBuf, 0, len)
                     }
                 }
+            }
+
+            val termSession = existingTermSession?.also {
+                // Reattach: rewire data callback to the new emulator/OSC handler
+                it.replaceDataCallback { data, offset, length ->
+                    feedOutput(data, offset, length)
+                }
                 Log.d(TAG, "Reattached to existing terminal session $sessionId")
             } ?: sessionManager.createTerminalSession(
                 sessionId = sessionId,
                 onDataReceived = { data, offset, length ->
-                    oscHandler.process(data, offset, length)
-                    mouseTracker.process(oscHandler.outputBuf, 0, oscHandler.outputLen)
-                    val len = oscHandler.outputLen
-                    if (len > 0) {
-                        writeBuffer.append(oscHandler.outputBuf, 0, len)
-                    }
+                    feedOutput(data, offset, length)
                 },
             ) ?: continue
 
@@ -904,6 +916,7 @@ class TerminalViewModel @Inject constructor(
                     activeMouseMode = mouseTracker.activeMouseMode,
                     bracketPasteMode = mouseTracker.bracketPasteMode,
                     oscHandler = oscHandler,
+                    feedOutput = feedOutput,
                     cwd = cwdFlow,
                     hyperlinkUri = hyperlinkFlow,
                     isReconnecting = reconnectingFlow,
@@ -933,15 +946,20 @@ class TerminalViewModel @Inject constructor(
             val rnsHyperlinkFlow = MutableStateFlow<String?>(null)
             rnsOscHandler.onCwdChanged = { rnsCwdFlow.value = it }
             rnsOscHandler.onHyperlink = { uri -> rnsHyperlinkFlow.value = uri }
-            val rnsSession = reticulumSessionManager.createTerminalSession(
-                sessionId = sessionId,
-                onDataReceived = { data, offset, length ->
+            val rnsFeedOutput: (ByteArray, Int, Int) -> Unit = { data, offset, length ->
+                synchronized(rnsOscHandler) {
                     rnsOscHandler.process(data, offset, length)
                     rnsMouseTracker.process(rnsOscHandler.outputBuf, 0, rnsOscHandler.outputLen)
                     val len = rnsOscHandler.outputLen
                     if (len > 0) {
                         rnsWriteBuffer.append(rnsOscHandler.outputBuf, 0, len)
                     }
+                }
+            }
+            val rnsSession = reticulumSessionManager.createTerminalSession(
+                sessionId = sessionId,
+                onDataReceived = { data, offset, length ->
+                    rnsFeedOutput(data, offset, length)
                 },
             ) ?: continue
 
@@ -979,6 +997,7 @@ class TerminalViewModel @Inject constructor(
                     activeMouseMode = rnsMouseTracker.activeMouseMode,
                     bracketPasteMode = rnsMouseTracker.bracketPasteMode,
                     oscHandler = rnsOscHandler,
+                    feedOutput = rnsFeedOutput,
                     cwd = rnsCwdFlow,
                     hyperlinkUri = rnsHyperlinkFlow,
                     isReconnecting = MutableStateFlow(false),
@@ -1009,6 +1028,16 @@ class TerminalViewModel @Inject constructor(
             val moshHyperlinkFlow = MutableStateFlow<String?>(null)
             moshOscHandler.onCwdChanged = { moshCwdFlow.value = it }
             moshOscHandler.onHyperlink = { uri -> moshHyperlinkFlow.value = uri }
+            val moshFeedOutput: (ByteArray, Int, Int) -> Unit = { data, offset, length ->
+                synchronized(moshOscHandler) {
+                    moshOscHandler.process(data, offset, length)
+                    moshMouseTracker.process(moshOscHandler.outputBuf, 0, moshOscHandler.outputLen)
+                    val len = moshOscHandler.outputLen
+                    if (len > 0) {
+                        moshWriteBuffer.append(moshOscHandler.outputBuf, 0, len)
+                    }
+                }
+            }
 
             // Defer initial command until shell prompt detected
             val moshInitialCmd = session.initialCommand
@@ -1019,12 +1048,7 @@ class TerminalViewModel @Inject constructor(
             val moshSession = moshSessionManager.createTerminalSession(
                 sessionId = sessionId,
                 onDataReceived = { data, offset, length ->
-                    moshOscHandler.process(data, offset, length)
-                    moshMouseTracker.process(moshOscHandler.outputBuf, 0, moshOscHandler.outputLen)
-                    val len = moshOscHandler.outputLen
-                    if (len > 0) {
-                        moshWriteBuffer.append(moshOscHandler.outputBuf, 0, len)
-                    }
+                    moshFeedOutput(data, offset, length)
                     // Send session manager command once shell prompt detected
                     if (moshInitialCmd != null && !moshPendingSent.get()) {
                         val raw = String(data, offset, length)
@@ -1076,6 +1100,7 @@ class TerminalViewModel @Inject constructor(
                     activeMouseMode = moshMouseTracker.activeMouseMode,
                     bracketPasteMode = moshMouseTracker.bracketPasteMode,
                     oscHandler = moshOscHandler,
+                    feedOutput = moshFeedOutput,
                     cwd = moshCwdFlow,
                     hyperlinkUri = moshHyperlinkFlow,
                     isReconnecting = MutableStateFlow(false),
@@ -1106,6 +1131,16 @@ class TerminalViewModel @Inject constructor(
             val etHyperlinkFlow = MutableStateFlow<String?>(null)
             etOscHandler.onCwdChanged = { etCwdFlow.value = it }
             etOscHandler.onHyperlink = { uri -> etHyperlinkFlow.value = uri }
+            val etFeedOutput: (ByteArray, Int, Int) -> Unit = { data, offset, length ->
+                synchronized(etOscHandler) {
+                    etOscHandler.process(data, offset, length)
+                    etMouseTracker.process(etOscHandler.outputBuf, 0, etOscHandler.outputLen)
+                    val len = etOscHandler.outputLen
+                    if (len > 0) {
+                        etWriteBuffer.append(etOscHandler.outputBuf, 0, len)
+                    }
+                }
+            }
 
             // Defer initial command until shell prompt detected
             val etInitialCmd = session.initialCommand
@@ -1115,12 +1150,7 @@ class TerminalViewModel @Inject constructor(
             val etSession = etSessionManager.createTerminalSession(
                 sessionId = sessionId,
                 onDataReceived = { data, offset, length ->
-                    etOscHandler.process(data, offset, length)
-                    etMouseTracker.process(etOscHandler.outputBuf, 0, etOscHandler.outputLen)
-                    val len = etOscHandler.outputLen
-                    if (len > 0) {
-                        etWriteBuffer.append(etOscHandler.outputBuf, 0, len)
-                    }
+                    etFeedOutput(data, offset, length)
                     // Send session manager command once shell prompt detected
                     if (etInitialCmd != null && !etPendingSent.get()) {
                         val raw = String(data, offset, length)
@@ -1172,6 +1202,7 @@ class TerminalViewModel @Inject constructor(
                     activeMouseMode = etMouseTracker.activeMouseMode,
                     bracketPasteMode = etMouseTracker.bracketPasteMode,
                     oscHandler = etOscHandler,
+                    feedOutput = etFeedOutput,
                     cwd = etCwdFlow,
                     hyperlinkUri = etHyperlinkFlow,
                     isReconnecting = MutableStateFlow(false),
@@ -1211,6 +1242,22 @@ class TerminalViewModel @Inject constructor(
                 val tabLabel = generateTabLabel(session.label, session.profileId, currentTabs)
                 val localProfile = runBlocking(Dispatchers.IO) { connectionRepository.getById(session.profileId) }
                 val localScheme = effectiveColorScheme(localProfile)
+                // The adopted headless session's real onDataReceived belongs
+                // to the agent transport and can't be teed here, so OSC /
+                // mouse tracking aren't wired to the live stream. These
+                // handlers exist only so the agent's feed_terminal_output
+                // test tool still has a working pipeline on this tab.
+                val adoptedOscHandler = OscHandler()
+                val adoptedWriteBuffer = EmulatorWriteBuffer({ agentRegistryEntry.emulator })
+                val adoptedFeedOutput: (ByteArray, Int, Int) -> Unit = { data, offset, length ->
+                    synchronized(adoptedOscHandler) {
+                        adoptedOscHandler.process(data, offset, length)
+                        val len = adoptedOscHandler.outputLen
+                        if (len > 0) {
+                            adoptedWriteBuffer.append(adoptedOscHandler.outputBuf, 0, len)
+                        }
+                    }
+                }
                 currentTabs.add(
                     TerminalTab(
                         sessionId = session.sessionId,
@@ -1222,7 +1269,8 @@ class TerminalViewModel @Inject constructor(
                         mouseMode = MutableStateFlow(false),
                         activeMouseMode = MutableStateFlow(null),
                         bracketPasteMode = MutableStateFlow(false),
-                        oscHandler = OscHandler(),
+                        oscHandler = adoptedOscHandler,
+                        feedOutput = adoptedFeedOutput,
                         cwd = MutableStateFlow(null),
                         hyperlinkUri = MutableStateFlow(null),
                         isReconnecting = MutableStateFlow(false),
@@ -1250,15 +1298,20 @@ class TerminalViewModel @Inject constructor(
             val localHyperlinkFlow = MutableStateFlow<String?>(null)
             localOscHandler.onCwdChanged = { localCwdFlow.value = it }
             localOscHandler.onHyperlink = { uri -> localHyperlinkFlow.value = uri }
-            val localSession = localSessionManager.createTerminalSession(
-                sessionId = sessionId,
-                onDataReceived = { data, offset, length ->
+            val localFeedOutput: (ByteArray, Int, Int) -> Unit = { data, offset, length ->
+                synchronized(localOscHandler) {
                     localOscHandler.process(data, offset, length)
                     localMouseTracker.process(localOscHandler.outputBuf, 0, localOscHandler.outputLen)
                     val len = localOscHandler.outputLen
                     if (len > 0) {
                         localWriteBuffer.append(localOscHandler.outputBuf, 0, len)
                     }
+                }
+            }
+            val localSession = localSessionManager.createTerminalSession(
+                sessionId = sessionId,
+                onDataReceived = { data, offset, length ->
+                    localFeedOutput(data, offset, length)
                 },
             ) ?: continue
 
@@ -1296,6 +1349,7 @@ class TerminalViewModel @Inject constructor(
                     activeMouseMode = localMouseTracker.activeMouseMode,
                     bracketPasteMode = localMouseTracker.bracketPasteMode,
                     oscHandler = localOscHandler,
+                    feedOutput = localFeedOutput,
                     cwd = localCwdFlow,
                     hyperlinkUri = localHyperlinkFlow,
                     isReconnecting = MutableStateFlow(false),
@@ -1329,8 +1383,23 @@ class TerminalViewModel @Inject constructor(
         // callbacks (see TerminalScreen.kt).
         val liveIds = currentTabs.map { it.sessionId }.toSet()
         for (tab in currentTabs) {
-            if (terminalSessionRegistry.get(tab.sessionId) == null) {
+            val existing = terminalSessionRegistry.get(tab.sessionId)
+            if (existing == null) {
                 terminalSessionRegistry.register(tab.sessionId, tab.emulator)
+            }
+            // Attach the agent test handles once. Covers both fresh tabs
+            // and the agent-headless-then-adopted case, where the registry
+            // entry already exists (registered by open_local_shell) but
+            // has no feedOutput yet.
+            if (existing?.feedOutput == null) {
+                terminalSessionRegistry.setAgentHandles(
+                    tab.sessionId,
+                    tab.mouseMode,
+                    tab.activeMouseMode,
+                    tab.bracketPasteMode,
+                    tab.oscHandler,
+                    tab.feedOutput,
+                )
             }
         }
         // Unregister registry entries whose underlying *session* has

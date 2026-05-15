@@ -74,6 +74,27 @@ class OscHandler(
     var outputLen = 0
         private set
 
+    // --- Last-seen OSC events, retained for agent test assertions. ---
+    // These mirror what was last dispatched to the callbacks above; they
+    // let the MCP layer assert "the OSC scanner saw X" without racing the
+    // callback. Never cleared except by a newer event of the same type.
+
+    /** Most recent OSC 52 clipboard-set payload (decoded text). */
+    var lastClipboardSet: String? = null
+        private set
+
+    /** Most recent OSC 7 working directory. */
+    var lastCwd: String? = null
+        private set
+
+    /** Most recent OSC 8 hyperlink URI; null after an explicit link-close. */
+    var lastHyperlink: String? = null
+        private set
+
+    /** Most recent OSC 9 / OSC 777 notification as (title, body). */
+    var lastNotification: Pair<String, String>? = null
+        private set
+
     /**
      * Process a chunk of terminal output. Handled OSC sequences are consumed;
      * everything else is written to [outputBuf]. Read [outputLen] bytes
@@ -271,6 +292,7 @@ class OscHandler(
         try {
             val decoded = Base64.getMimeDecoder().decode(base64Data.toByteArray())
             val text = String(decoded, Charsets.UTF_8)
+            lastClipboardSet = text
             onClipboardSet(text)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to decode OSC 52 base64 payload", e)
@@ -279,6 +301,7 @@ class OscHandler(
 
     private fun dispatchOsc7(payload: String) {
         if (payload.isNotEmpty()) {
+            lastCwd = payload
             onCwdChanged(payload)
         }
     }
@@ -290,14 +313,17 @@ class OscHandler(
 
         val uri = payload.substring(semi + 1)
         if (uri.isEmpty()) {
+            lastHyperlink = null
             onHyperlink(null) // close link
         } else {
+            lastHyperlink = uri
             onHyperlink(uri)
         }
     }
 
     private fun dispatchOsc9(payload: String) {
         if (payload.isNotEmpty()) {
+            lastNotification = "" to payload
             onNotification("", payload)
         }
     }
@@ -307,6 +333,7 @@ class OscHandler(
         val parts = payload.split(';', limit = 3)
         if (parts.size < 3) return
         if (parts[0] != "notify") return
+        lastNotification = parts[1] to parts[2]
         onNotification(parts[1], parts[2])
     }
 
