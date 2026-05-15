@@ -24,6 +24,15 @@ androidx-browser = "1.8.0"
 androidx-work = "2.9.0"
 androidx-hilt-work = "1.2.0"
 okhttp = "4.12.0"
+# QR / barcode + on-device OCR for the terminal's Scan/Recognize attach options.
+# ZXing core is pure Java (Apache 2.0). Tesseract4Android is the adaptech-cz
+# maintained fork that wraps Tesseract 5.x via JNI (Apache 2.0).
+zxing = "3.5.3"
+# adaptech-cz Tesseract4Android is shipped via JitPack (no Maven Central
+# artifact). 4.8.0 wraps Tesseract 5.x + leptonica, JitPack build "ok".
+# Check https://jitpack.io/#adaptech-cz/Tesseract4Android before bumping —
+# some upstream tags fail JitPack's build and never get an AAR.
+tesseract4android = "4.8.0"
 
 [libraries]
 # Compose BOM
@@ -82,6 +91,13 @@ okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver",
 
 # Terminal
 termlib = { group = "org.connectbot", name = "termlib", version.ref = "termlib" }
+
+# Scan / OCR — feeds the terminal's paperclip → camera/photo flow. ZXing-core
+# stays pure Java (no Android dep), so the recognizer can be unit-tested on
+# the JVM. Tesseract4Android ships native libs per ABI and is the F-Droid-
+# friendly alternative to Google ML Kit.
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+tesseract4android = { group = "com.github.adaptech-cz", name = "Tesseract4Android", version.ref = "tesseract4android" }
 
 # JNA (for UniFFI-generated bindings — keep in sync with rdp-kotlin/build.gradle.kts)
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }

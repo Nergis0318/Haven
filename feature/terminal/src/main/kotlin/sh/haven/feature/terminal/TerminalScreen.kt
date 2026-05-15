@@ -253,6 +253,112 @@ fun TerminalScreen(
         )
     }
 
+    // Paperclip → bottom sheet → camera / gallery → recognise → paste.
+    //
+    // The bottom sheet hosts the SAF "send file" entry alongside four
+    // image-recognition flows (QR / OCR × Camera / Gallery). Two launchers
+    // back the four entries: TakePicture writes into a FileProvider cache
+    // URI we control; PickVisualMedia returns whatever URI the picker hands
+    // back. A single `pendingScanMode` decides which recogniser the result
+    // is routed to so we don't need four separate launchers.
+    var attachSheetVisible by remember { mutableStateOf(false) }
+    var pendingScanMode by remember { mutableStateOf<TerminalViewModel.ScanMode?>(null) }
+    var cameraOutputUri by remember { mutableStateOf<Uri?>(null) }
+
+    val cameraScanLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.TakePicture()
+    ) { success ->
+        val uri = cameraOutputUri
+        val mode = pendingScanMode
+        cameraOutputUri = null
+        pendingScanMode = null
+        if (success && uri != null && mode != null) {
+            viewModel.runScanFlow(uri, mode)
+        }
+    }
+
+    val galleryScanLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        val mode = pendingScanMode
+        pendingScanMode = null
+        if (uri != null && mode != null) {
+            viewModel.runScanFlow(uri, mode)
+        }
+    }
+
+    // Inject recognised text at the cursor on the active tab, honouring
+    // bracket-paste so a runaway newline can't be mis-interpreted as Enter
+    // by the remote app. Drains the StateFlow via consumeScanInjection so
+    // a second result doesn't fire on recomposition.
+    val pendingScanInjection by viewModel.pendingScanInjection.collectAsState()
+    LaunchedEffect(pendingScanInjection) {
+        val text = pendingScanInjection ?: return@LaunchedEffect
+        val tab = viewModel.tabs.value.getOrNull(viewModel.activeTabIndex.value)
+        if (tab != null) {
+            val payload = if (tab.bracketPasteMode.value) {
+                "[200~$text[201~"
+            } else {
+                text
+            }
+            tab.sendInput(payload.toByteArray())
+        }
+        viewModel.consumeScanInjection()
+    }
+
+    fun launchCameraScan(mode: TerminalViewModel.ScanMode) {
+        val cacheRoot = java.io.File(context.cacheDir, "scan").apply { mkdirs() }
+        val file = java.io.File(cacheRoot, "scan_${System.currentTimeMillis()}.jpg")
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        cameraOutputUri = uri
+        pendingScanMode = mode
+        try {
+            cameraScanLauncher.launch(uri)
+        } catch (_: android.content.ActivityNotFoundException) {
+            cameraOutputUri = null
+            pendingScanMode = null
+            android.widget.Toast.makeText(
+                context,
+                context.getString(R.string.terminal_scan_no_camera),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    fun launchGalleryScan(mode: TerminalViewModel.ScanMode) {
+        pendingScanMode = mode
+        galleryScanLauncher.launch(
+            androidx.activity.result.PickVisualMediaRequest(
+                androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly,
+            ),
+        )
+    }
+
+    if (attachSheetVisible) {
+        sh.haven.feature.terminal.attach.AttachOptionsSheet(
+            onDismiss = { attachSheetVisible = false },
+            onSelect = { option ->
+                attachSheetVisible = false
+                when (option) {
+                    sh.haven.feature.terminal.attach.AttachOption.SEND_FILE ->
+                        attachLauncher.launch(arrayOf("*/*"))
+                    sh.haven.feature.terminal.attach.AttachOption.SCAN_CAMERA ->
+                        launchCameraScan(TerminalViewModel.ScanMode.BARCODE)
+                    sh.haven.feature.terminal.attach.AttachOption.SCAN_GALLERY ->
+                        launchGalleryScan(TerminalViewModel.ScanMode.BARCODE)
+                    sh.haven.feature.terminal.attach.AttachOption.OCR_CAMERA ->
+                        launchCameraScan(TerminalViewModel.ScanMode.OCR)
+                    sh.haven.feature.terminal.attach.AttachOption.OCR_GALLERY ->
+                        launchGalleryScan(TerminalViewModel.ScanMode.OCR)
+                }
+            },
+        )
+    }
+
     // Resolve the terminal typeface: user-supplied font path wins
     // (covers any TTF/OTF the user picked); falls back to the bundled
     // Hack Nerd Font Mono so Powerline / Devicons / Font Awesome
@@ -978,7 +1084,7 @@ fun TerminalScreen(
                         onToggleStandardKeyboard = onToggleStandardKeyboard,
                         rawKeyboardMode = rawKeyboardMode,
                         onToggleRawKeyboard = onToggleRawKeyboard,
-                        onAttachTap = { attachLauncher.launch(arrayOf("*/*")) },
+                        onAttachTap = { attachSheetVisible = true },
                         selectionContent = selectionController?.let { ctrl -> {
                             SelectionToolbarContent(
                                 controller = ctrl,

@@ -127,3 +127,19 @@
 # regex is compiled. Both libs are pulled in transitively by tm4e.
 -keep class org.joni.** { *; }
 -keep class org.jcodings.** { *; }
+
+# Tesseract4Android — native libtess.so / libleptonica.so dispatch back
+# into Java via JNI by class+field+method name (mNativeData, init,
+# nativeInit, nativeSetImageBitmap, etc.). R8 obfuscating any of the
+# leptonica or tesseract Java wrappers crashes the OCR engine the first
+# time TessBaseAPI.init runs. Keep both package trees and JNI-flagged
+# native method declarations verbatim. Used by core:scan for the
+# paperclip → "Recognize text" attach flow.
+-keep class com.googlecode.tesseract.android.** { *; }
+-keep class com.googlecode.leptonica.android.** { *; }
+-keepclasseswithmembernames class com.googlecode.tesseract.android.** {
+    native <methods>;
+}
+-keepclasseswithmembernames class com.googlecode.leptonica.android.** {
+    native <methods>;
+}

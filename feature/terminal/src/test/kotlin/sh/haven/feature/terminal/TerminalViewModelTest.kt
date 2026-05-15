@@ -50,6 +50,8 @@ class TerminalViewModelTest {
             sh.haven.core.data.agent.AgentUiCommandBus(),
             mockk(relaxed = true),
             sh.haven.feature.terminal.agent.TerminalSessionRegistry(),
+            mockk(relaxed = true), // BarcodeDecoder
+            mockk(relaxed = true), // TextRecognizer
         )
     }
 
