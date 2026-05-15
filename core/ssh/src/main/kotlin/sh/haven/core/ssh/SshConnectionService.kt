@@ -6,9 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,7 +80,19 @@ class SshConnectionService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // specialUse, not dataSync: on Android 16 dataSync gets killed
+        // by Stop FGS timeout every 10–30 s regardless of the 3-arg
+        // startForeground call, which tears down any SSH session and
+        // the MCP reverse tunnel forwarded over it. specialUse fits the
+        // long-lived-connection use case and isn't subject to the same
+        // timeout schedule; subtype is declared via PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+        // on the <service> element in the manifest.
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+        )
         return START_STICKY
     }
 
