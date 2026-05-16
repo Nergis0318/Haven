@@ -33,6 +33,9 @@ zxing = "3.5.3"
 # Check https://jitpack.io/#adaptech-cz/Tesseract4Android before bumping —
 # some upstream tags fail JitPack's build and never get an AAR.
 tesseract4android = "4.8.0"
+# Pure-Java XZ decoder, BSD-licensed. Needed to extract tar.xz rootfs
+# tarballs (Debian / Ubuntu / Arch from proot-distro). Tiny (~110KB).
+xz = "1.9"
 
 [libraries]
 # Compose BOM
@@ -98,6 +101,9 @@ termlib = { group = "org.connectbot", name = "termlib", version.ref = "termlib" 
 # friendly alternative to Google ML Kit.
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 tesseract4android = { group = "com.github.adaptech-cz", name = "Tesseract4Android", version.ref = "tesseract4android" }
+
+# XZ decoder for tar.xz rootfs tarballs (Debian / Ubuntu via proot-distro).
+xz = { group = "org.tukaani", name = "xz", version.ref = "xz" }
 
 # JNA (for UniFFI-generated bindings — keep in sync with rdp-kotlin/build.gradle.kts)
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }

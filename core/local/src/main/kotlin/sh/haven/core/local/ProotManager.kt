@@ -15,6 +15,8 @@ import sh.haven.core.local.proot.Distro
 import sh.haven.core.local.proot.DistroCatalog
 import sh.haven.core.local.proot.LaunchSpec
 import sh.haven.core.local.proot.PackageOps
+import sh.haven.core.local.proot.RootfsFormat
+import sh.haven.core.local.proot.RootfsSource
 import sh.haven.core.security.CredentialEncryption
 import java.io.BufferedInputStream
 import java.io.File
@@ -24,6 +26,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "ProotManager"
+private const val PREF_ACTIVE_DISTRO_ID = "active_distro_id"
 
 /**
  * Manages the PRoot binary and Alpine Linux rootfs.
@@ -49,18 +52,71 @@ class ProotManager @Inject constructor(
     private val _state = MutableStateFlow<SetupState>(SetupState.NotInstalled)
     val state: StateFlow<SetupState> = _state.asStateFlow()
 
+    private val prefs by lazy {
+        context.getSharedPreferences("proot-manager", Context.MODE_PRIVATE)
+    }
+
+    private val _activeDistroId = MutableStateFlow(
+        prefs.getString(PREF_ACTIVE_DISTRO_ID, null) ?: DistroCatalog.DEFAULT_ID,
+    )
+
     /**
-     * Currently-active distro id. Phase 1 always defaults to
-     * [DistroCatalog.DEFAULT_ID]; Phase 2 makes this user-selectable
-     * and persists the choice in SharedPreferences.
+     * Currently-active distro id. Backed by SharedPreferences so
+     * the user's choice survives app restarts. Defaults to
+     * [DistroCatalog.DEFAULT_ID] (Alpine 3.21) on fresh installs.
      */
+    val activeDistroIdFlow: StateFlow<String> = _activeDistroId.asStateFlow()
     val activeDistroId: String
-        get() = DistroCatalog.DEFAULT_ID
+        get() = _activeDistroId.value
+
+    /**
+     * Set the active distro. The id must resolve in [DistroCatalog].
+     * Persists immediately; subsequent calls to [activeRootfsDir] /
+     * [installRootfs] / DE operations route to the new distro.
+     *
+     * Setting this to a distro that has no rootfs installed yet is
+     * fine — the next [installRootfs] call will download it.
+     */
+    fun setActiveDistroId(id: String) {
+        require(DistroCatalog.lookup(id) != null) { "Unknown distro id: $id" }
+        if (id == _activeDistroId.value) return
+        prefs.edit().putString(PREF_ACTIVE_DISTRO_ID, id).apply()
+        _activeDistroId.value = id
+        // Re-evaluate ready state for the new active rootfs
+        _state.value = if (isReady) SetupState.Ready else SetupState.NotInstalled
+        Log.d(TAG, "Active distro switched to $id")
+    }
 
     /** The active [Distro] looked up from [DistroCatalog]. */
     val activeDistro: Distro
         get() = DistroCatalog.lookup(activeDistroId)
             ?: error("Unknown distro id: $activeDistroId")
+
+    /**
+     * Distros that are installed on this device — derived from the
+     * filesystem rather than persisted state, so it's robust to
+     * marker-file drift. A rootfs counts as installed if its
+     * `bin/sh` is present at `proot/rootfs/<id>/`.
+     */
+    val installedDistros: List<Distro>
+        get() = DistroCatalog.all.filter { distro ->
+            val binSh = File(rootfsDirFor(distro.id), "bin/sh").toPath()
+            java.nio.file.Files.exists(binSh, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        }
+
+    /**
+     * Catalog entries the user could install: arch-compatible, not
+     * already installed. Used by the distro picker's
+     * "+ Add another distro" affordance.
+     */
+    val availableDistros: List<Distro>
+        get() {
+            val arch = Arch.current() ?: return emptyList()
+            val installed = installedDistros.map { it.id }.toSet()
+            return DistroCatalog.all.filter { distro ->
+                distro.id !in installed && distro.rootfsSources.containsKey(arch)
+            }
+        }
 
     /**
      * Resolve the rootfs directory for a specific distro id.
@@ -269,7 +325,28 @@ class ProotManager @Inject constructor(
 
     init {
         migrateLegacyAlpineDir()
+        reconcileActiveDistro()
         _state.value = if (isReady) SetupState.Ready else SetupState.NotInstalled
+    }
+
+    /**
+     * If the persisted active distro id points at a rootfs that
+     * isn't installed (e.g. a previous addDistro failed mid-flight
+     * and the revert-to-previous didn't fire), fall back to the
+     * first installed distro — or to the default if none are
+     * installed. Keeps users out of an "active but missing" hole
+     * where the local shell silently falls back to Android shell.
+     */
+    private fun reconcileActiveDistro() {
+        val current = _activeDistroId.value
+        val currentInstalled = installedDistros.any { it.id == current }
+        if (currentInstalled) return
+        val fallback = installedDistros.firstOrNull()?.id ?: DistroCatalog.DEFAULT_ID
+        if (fallback != current) {
+            prefs.edit().putString(PREF_ACTIVE_DISTRO_ID, fallback).apply()
+            _activeDistroId.value = fallback
+            Log.d(TAG, "Active distro $current has no rootfs; falling back to $fallback")
+        }
     }
 
     /**
@@ -321,7 +398,7 @@ class ProotManager @Inject constructor(
                 )
             val url = source.url
             val expectedSha256 = source.sha256
-            val tarball = File(context.cacheDir, "${distro.id}-rootfs.tar.gz")
+            val tarball = File(context.cacheDir, "${distro.id}-rootfs.tar")
 
             // Download
             withContext(Dispatchers.IO) {
@@ -372,7 +449,7 @@ class ProotManager @Inject constructor(
             _state.value = SetupState.Extracting
             val targetDir = File(context.filesDir, "proot/rootfs/${distro.id}")
             withContext(Dispatchers.IO) {
-                extractTarGz(tarball, targetDir)
+                extractTarball(tarball, targetDir, source)
                 tarball.delete()
                 Log.d(TAG, "Rootfs extracted to ${targetDir.absolutePath}")
 
@@ -388,6 +465,23 @@ class ProotManager @Inject constructor(
                 // pattern composes with Haven's SSH primitives. No vendor
                 // CLIs, no cloned repositories, no hardcoded hosts.
                 seedRootHome(targetDir)
+            }
+
+            // Run distro-specific post-extract hooks before baseline:
+            // pacman-key --init, xbps-install -S, etc. Phase 2 (Alpine,
+            // Debian) ships with empty hook lists — the infrastructure
+            // is wired ahead of Phase 3 (Arch, Void) needing it.
+            for (hook in distro.postExtractHooks) {
+                try {
+                    val (output, code) = runCommandInProot(hook.command)
+                    if (code == 0) {
+                        Log.d(TAG, "postExtractHook ${hook.id} ok")
+                    } else {
+                        Log.w(TAG, "postExtractHook ${hook.id} exit=$code tail=${output.takeLast(200)}")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "postExtractHook ${hook.id} failed (non-fatal): ${e.message}")
+                }
             }
 
             // Install a minimal baseline of packages so the environment is
@@ -407,15 +501,30 @@ class ProotManager @Inject constructor(
     }
 
     /**
-     * Extract a .tar.gz file to a directory using Java streams.
-     * Implements minimal POSIX tar parsing (512-byte headers, ustar format).
+     * Extract a tar.gz / tar.xz file to a directory using Java
+     * streams. Implements minimal POSIX tar parsing (512-byte
+     * headers, ustar format) and honours [RootfsSource.format] +
+     * [RootfsSource.stripComponents].
+     *
+     * stripComponents removes the leading N path components from
+     * each entry name, matching `tar --strip-components=N`. Used
+     * for tarballs that wrap the rootfs in a top-level directory
+     * (e.g. proot-distro's `debian-bookworm-aarch64/`).
      */
-    private fun extractTarGz(tarball: File, destDir: File) {
+    private fun extractTarball(tarball: File, destDir: File, source: RootfsSource) {
         destDir.mkdirs()
         var fileCount = 0
         var symlinkCount = 0
 
-        java.util.zip.GZIPInputStream(tarball.inputStream().buffered()).use { gzIn ->
+        val rawInput = tarball.inputStream().buffered()
+        val decompressed: java.io.InputStream = when (source.format) {
+            RootfsFormat.TAR_GZ -> java.util.zip.GZIPInputStream(rawInput)
+            RootfsFormat.TAR_XZ -> org.tukaani.xz.XZInputStream(rawInput)
+            RootfsFormat.TAR_ZSTD -> error(
+                "TAR_ZSTD support not yet wired — add a zstd decoder dep to core/local first.",
+            )
+        }
+        decompressed.use { gzIn ->
             val header = ByteArray(512)
             var pendingLongName: String? = null
 
@@ -447,11 +556,32 @@ class ProotManager @Inject constructor(
                 }
 
                 // Resolve final name
-                val entryName = pendingLongName ?: run {
+                val rawEntryName = pendingLongName ?: run {
                     val prefix = extractString(header, 345, 155)
                     if (prefix.isNotEmpty()) "$prefix/$name" else name
                 }
                 pendingLongName = null
+
+                // Apply tar --strip-components=N: drop the first N
+                // path components. If the entry has fewer than N
+                // components left after stripping it's a no-op (the
+                // wrapper-dir itself becomes the empty string, which
+                // we skip).
+                val entryName = if (source.stripComponents > 0) {
+                    val parts = rawEntryName.trimEnd('/').split('/').drop(source.stripComponents)
+                    if (parts.isEmpty()) {
+                        // Wrapper directory itself — skip header data
+                        if (size > 0) skipToBlock(gzIn, size)
+                        continue
+                    }
+                    parts.joinToString("/")
+                } else {
+                    rawEntryName
+                }
+                if (entryName.isEmpty()) {
+                    if (size > 0) skipToBlock(gzIn, size)
+                    continue
+                }
 
                 val outFile = File(destDir, entryName)
 
@@ -697,7 +827,10 @@ class ProotManager @Inject constructor(
             "-b", "/dev", "-b", "/proc", "-b", "/sys",
             "-b", "${context.cacheDir.absolutePath}:/tmp",
             "-w", "/root",
-            "/bin/busybox", "sh", "-c", command,
+            // Use /bin/sh — works on both Alpine (symlink to busybox)
+            // and Debian (symlink to dash). Avoid hardcoding busybox
+            // since Debian and other glibc distros don't ship it.
+            "/bin/sh", "-c", command,
         ).apply {
             environment().apply {
                 put("HOME", "/root")

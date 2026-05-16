@@ -44,6 +44,9 @@ dependencies {
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 
+    // Pure-Java XZ decoder for tar.xz rootfs tarballs (issue #162 phase 2).
+    implementation(libs.xz)
+
     testImplementation(libs.junit)
 }
 

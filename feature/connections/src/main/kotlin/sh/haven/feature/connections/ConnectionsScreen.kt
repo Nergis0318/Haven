@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Restore
@@ -63,6 +64,7 @@ import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.VpnLock
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -731,10 +733,18 @@ fun ConnectionsScreen(
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState()),
                 ) {
+                    val activeDistroId by viewModel.activeDistroId.collectAsState()
+                    val rootfsSetupState by viewModel.rootfsSetupState.collectAsState()
                     DesktopManagerSection(
                         installedDesktops = viewModel.installedDesktops,
                         desktopStates = desktopStates,
                         desktopSetupState = desktopSetupState,
+                        activeDistroId = activeDistroId,
+                        installedDistros = viewModel.installedDistros,
+                        availableDistros = viewModel.availableDistros,
+                        rootfsSetupState = rootfsSetupState,
+                        onSwitchDistro = { id -> viewModel.switchActiveDistro(id) },
+                        onAddDistro = { distro -> viewModel.addDistro(distro) },
                         onInstall = { de -> setupDesktopDe = de },
                         onStart = { de -> viewModel.startDesktop(de) },
                         onStop = { de -> viewModel.stopDesktop(de) },
@@ -1861,47 +1871,137 @@ private fun DesktopManagerSection(
     installedDesktops: Set<sh.haven.core.local.ProotManager.DesktopEnvironment>,
     desktopStates: Map<sh.haven.core.local.ProotManager.DesktopEnvironment, sh.haven.core.local.DesktopManager.DesktopInstance>,
     desktopSetupState: sh.haven.core.local.ProotManager.DesktopSetupState,
+    activeDistroId: String,
+    installedDistros: List<sh.haven.core.local.proot.Distro>,
+    availableDistros: List<sh.haven.core.local.proot.Distro>,
+    rootfsSetupState: sh.haven.core.local.ProotManager.SetupState,
+    onSwitchDistro: (String) -> Unit,
+    onAddDistro: (sh.haven.core.local.proot.Distro) -> Unit,
     onInstall: (sh.haven.core.local.ProotManager.DesktopEnvironment) -> Unit,
     onStart: (sh.haven.core.local.ProotManager.DesktopEnvironment) -> Unit,
     onStop: (sh.haven.core.local.ProotManager.DesktopEnvironment) -> Unit,
     onUninstall: (sh.haven.core.local.ProotManager.DesktopEnvironment) -> Unit,
 ) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    var distroMenuOpen by remember { mutableStateOf(false) }
 
+    val activeDistroLabel = installedDistros.firstOrNull { it.id == activeDistroId }?.label
+        ?: sh.haven.core.local.proot.DistroCatalog.lookup(activeDistroId)?.label
+        ?: activeDistroId
+
+    // No outer "Desktops" header / expand chevron — the dedicated
+    // Desktops screen already has that title in the app bar. The card
+    // wrapper stays for visual grouping; the content is always shown.
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded },
-            ) {
-                Icon(
-                    Icons.Filled.DesktopWindows,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    stringResource(R.string.connections_desktops_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                Icon(
-                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+            run {
+                // Distro picker — visible whenever there's at least one
+                // installable distro the user doesn't already have, or
+                // more than one installed. With exactly one installed
+                // distro and no further options, the picker is hidden
+                // to preserve the pre-issue-#162 UX.
+                if (installedDistros.size > 1 || availableDistros.isNotEmpty()) {
+                    Box {
+                        AssistChip(
+                            onClick = { distroMenuOpen = true },
+                            label = { Text(activeDistroLabel) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.DesktopWindows,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            trailingIcon = {
+                                Icon(
+                                    Icons.Filled.ExpandMore,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                        )
+                        DropdownMenu(
+                            expanded = distroMenuOpen,
+                            onDismissRequest = { distroMenuOpen = false },
+                        ) {
+                            installedDistros.forEach { distro ->
+                                DropdownMenuItem(
+                                    text = { Text(distro.label) },
+                                    onClick = {
+                                        onSwitchDistro(distro.id)
+                                        distroMenuOpen = false
+                                    },
+                                    trailingIcon = if (distro.id == activeDistroId) {
+                                        { Icon(Icons.Filled.Check, contentDescription = null) }
+                                    } else null,
+                                )
+                            }
+                            if (availableDistros.isNotEmpty() && installedDistros.isNotEmpty()) {
+                                HorizontalDivider()
+                            }
+                            availableDistros.forEach { distro ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text("+ ${distro.label}  (~${distro.sizeEstimateMb} MB)")
+                                    },
+                                    onClick = {
+                                        onAddDistro(distro)
+                                        distroMenuOpen = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    // Active-distro setup progress: shown when the user
+                    // just added a distro (Downloading/Extracting) or
+                    // when the rootfs failed to install. Hidden in the
+                    // steady-state Ready/NotInstalled paths since the
+                    // per-DE rows already convey installed state.
+                    when (val s = rootfsSetupState) {
+                        is sh.haven.core.local.ProotManager.SetupState.Downloading -> {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Downloading rootfs… ${s.progress}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        sh.haven.core.local.ProotManager.SetupState.Extracting -> {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Extracting rootfs…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        is sh.haven.core.local.ProotManager.SetupState.Error -> {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Rootfs install failed: ${s.message}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        else -> { /* Ready / NotInstalled — silent */ }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
 
-            if (expanded) {
-                Spacer(Modifier.height(8.dp))
-                sh.haven.core.local.ProotManager.DesktopEnvironment.entries.filter { !it.hidden }.forEach { de ->
+                // Filter DEs to those that actually have a package list
+                // for the active distro's family. e.g. labwc-native has
+                // APK packages only — hiding it on Debian prevents the
+                // user from tapping a button that throws on apt-get.
+                val activeDistro = sh.haven.core.local.proot.DistroCatalog.lookup(activeDistroId)
+                val compatibleDes = sh.haven.core.local.ProotManager.DesktopEnvironment.entries
+                    .filter { !it.hidden }
+                    .filter { de ->
+                        activeDistro == null ||
+                            de.spec.packagesPerFamily.containsKey(activeDistro.family)
+                    }
+                compatibleDes.forEach { de ->
                     val isInstalled = de in installedDesktops
                     val instance = desktopStates[de]
                     DesktopRow(

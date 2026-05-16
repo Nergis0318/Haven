@@ -1421,6 +1421,56 @@ class ConnectionsViewModel @Inject constructor(
     val installedDesktops: Set<sh.haven.core.local.ProotManager.DesktopEnvironment>
         get() = localSessionManager.prootManager.installedDesktops
 
+    /** Currently-active distro id (e.g. "alpine-3.21", "debian-bookworm"). */
+    val activeDistroId: StateFlow<String> =
+        localSessionManager.prootManager.activeDistroIdFlow
+
+    /** Rootfs install progress for the active distro (NotInstalled/Downloading/Extracting/Ready/Error). */
+    val rootfsSetupState: StateFlow<sh.haven.core.local.ProotManager.SetupState> =
+        localSessionManager.prootManager.state
+
+    /** Distros installed on this device (filesystem-derived). */
+    val installedDistros: List<sh.haven.core.local.proot.Distro>
+        get() = localSessionManager.prootManager.installedDistros
+
+    /** Catalog distros that could be added (arch-compatible, not installed). */
+    val availableDistros: List<sh.haven.core.local.proot.Distro>
+        get() = localSessionManager.prootManager.availableDistros
+
+    /** Switch the active distro — affects which rootfs subsequent DE ops use. */
+    fun switchActiveDistro(distroId: String) {
+        localSessionManager.prootManager.setActiveDistroId(distroId)
+    }
+
+    /**
+     * Make [distro] the active distro and install its rootfs. The
+     * common path for "+ Add another distro" — selecting one already
+     * installed just switches to it via [switchActiveDistro]; this
+     * action both switches AND triggers the download/extract flow.
+     *
+     * If the rootfs install fails the active distro reverts to the
+     * previous selection so the user isn't left with an "active but
+     * missing" distro where Haven thinks no rootfs is installed.
+     */
+    fun addDistro(distro: sh.haven.core.local.proot.Distro) {
+        val pm = localSessionManager.prootManager
+        val previousActive = pm.activeDistroId
+        pm.setActiveDistroId(distro.id)
+        viewModelScope.launch {
+            try {
+                pm.installRootfs()
+                val state = pm.state.value
+                if (state is sh.haven.core.local.ProotManager.SetupState.Error) {
+                    Log.w(TAG, "addDistro: ${distro.id} install failed (${state.message}), reverting to $previousActive")
+                    pm.setActiveDistroId(previousActive)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "addDistro: ${distro.id} install threw", e)
+                pm.setActiveDistroId(previousActive)
+            }
+        }
+    }
+
     /** Install a desktop environment (packages only, does not auto-start). */
     fun setupDesktop(
         vncPassword: String,

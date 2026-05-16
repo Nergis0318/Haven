@@ -223,7 +223,9 @@ class DesktopManager @Inject constructor(
             "-b", "/dev", "-b", "/proc", "-b", "/sys",
             "-b", "${context.cacheDir.absolutePath}:/tmp",
         )
-        prootArgs.addAll(listOf("-w", "/root", "/bin/busybox", "sh", "-c", shellCmd))
+        // /bin/sh works on both Alpine (symlink to busybox) and Debian
+        // (symlink to dash). See ProotManager.runCommandInProot.
+        prootArgs.addAll(listOf("-w", "/root", "/bin/sh", "-c", shellCmd))
 
         return ProcessBuilder(prootArgs).apply {
             environment().apply {
@@ -347,7 +349,7 @@ class DesktopManager @Inject constructor(
                 "-b", "${context.cacheDir.absolutePath}:/tmp",
                 "-b", "${xdgDir.absolutePath}:/tmp/xdg-runtime",
                 "-w", "/root",
-                "/bin/busybox", "sh", "-c",
+                "/bin/sh", "-c",
                 "export HOME=/root; " +
                     "export XDG_RUNTIME_DIR=/tmp/xdg-runtime; " +
                     "export XDG_DATA_HOME=/root/.local/share; " +

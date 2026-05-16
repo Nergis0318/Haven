@@ -125,11 +125,15 @@ class LocalSessionManager @Inject constructor(
      * defeats).
      */
     private fun sessionManagerShellArgs(sessionName: String, plain: Boolean = false): Array<String> {
-        if (plain) return arrayOf("/bin/busybox", "sh", "-l")
+        // Use /bin/sh rather than /bin/busybox: Alpine's /bin/sh is a
+        // symlink to busybox, Debian's is a symlink to dash, both
+        // accept -l / -c with the same semantics. Hardcoding busybox
+        // breaks any non-Alpine distro added under issue #162.
+        if (plain) return arrayOf("/bin/sh", "-l")
         val mgr = sessionManager
         val template = mgr.command
         if (template == null) {
-            return arrayOf("/bin/busybox", "sh", "-l")
+            return arrayOf("/bin/sh", "-l")
         }
         val sanitizedName = sessionName.replace(Regex("[^A-Za-z0-9._-]"), "-")
         val cmd = template(sanitizedName)
@@ -139,7 +143,7 @@ class LocalSessionManager @Inject constructor(
         // Wrap in `command -v` so missing binaries don't break the
         // session. Login shell first so PATH/profile are set up.
         val wrapped = "if command -v $bin >/dev/null 2>&1; then exec $cmd; else exec /bin/sh -l; fi"
-        return arrayOf("/bin/busybox", "sh", "-l", "-c", wrapped)
+        return arrayOf("/bin/sh", "-l", "-c", wrapped)
     }
 
     /**

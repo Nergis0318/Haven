@@ -48,11 +48,18 @@ enum class RootfsFormat { TAR_GZ, TAR_XZ, TAR_ZSTD }
  * A rootfs download source — pinned URL + sha256 for one arch of
  * one distro. SHA-256 is required: rootfs integrity is a security
  * boundary, not a UX concern.
+ *
+ * [stripComponents] mirrors `tar --strip-components=N` — used when
+ * a tarball wraps the rootfs in a top-level directory (proot-distro
+ * does this; Alpine's minirootfs does not). Set to 1 for the
+ * `<distro>-<arch>/` wrapper convention; leave at 0 for tarballs
+ * whose files are already at the top level.
  */
 data class RootfsSource(
     val url: String,
     val sha256: String,
     val format: RootfsFormat = RootfsFormat.TAR_GZ,
+    val stripComponents: Int = 0,
 )
 
 /**
@@ -140,7 +147,37 @@ object DistroCatalog {
         sizeEstimateMb = 6,
     )
 
-    val all: List<Distro> = listOf(ALPINE_3_21)
+    /**
+     * Debian Bookworm (12) — first non-Alpine distro, landed in
+     * Phase 2 of issue #162. Rootfs tarballs come from termux's
+     * `proot-distro` project (the `pd-v4.17.3` revision is the
+     * last one before they bumped Bookworm → Trixie). The
+     * tarballs are wrapped in a top-level `debian-bookworm-<arch>/`
+     * directory, hence `stripComponents = 1`.
+     */
+    val DEBIAN_BOOKWORM = Distro(
+        id = "debian-bookworm",
+        label = "Debian 12 (Bookworm)",
+        family = PackageFamily.APT,
+        rootfsSources = mapOf(
+            Arch.AARCH64 to RootfsSource(
+                url = "https://github.com/termux/proot-distro/releases/download/v4.17.3/debian-bookworm-aarch64-pd-v4.17.3.tar.xz",
+                sha256 = "3a841a794ae5999b33e33b329582ed0379d4f54ca62c6ce5a8eb9cff5ef8900b",
+                format = RootfsFormat.TAR_XZ,
+                stripComponents = 1,
+            ),
+            Arch.X86_64 to RootfsSource(
+                url = "https://github.com/termux/proot-distro/releases/download/v4.17.3/debian-bookworm-x86_64-pd-v4.17.3.tar.xz",
+                sha256 = "675e534333adcbf369e97abda3088927651e5d91612ae5727c52ff2284f4b8c8",
+                format = RootfsFormat.TAR_XZ,
+                stripComponents = 1,
+            ),
+        ),
+        baselinePackages = listOf("bash", "curl", "ca-certificates", "openssh-client", "tmux"),
+        sizeEstimateMb = 130,
+    )
+
+    val all: List<Distro> = listOf(ALPINE_3_21, DEBIAN_BOOKWORM)
 
     fun lookup(id: String): Distro? = all.firstOrNull { it.id == id }
 
@@ -155,6 +192,12 @@ object DesktopCatalog {
         label = "Openbox (VNC)",
         packagesPerFamily = mapOf(
             PackageFamily.APK to listOf("tigervnc", "openbox", "xterm", "xsetroot", "font-noto"),
+            // Debian: tigervnc-standalone-server is the unprivileged Xvnc;
+            // openbox + xterm + fonts-noto-core match the Alpine selection.
+            PackageFamily.APT to listOf(
+                "tigervnc-standalone-server", "openbox", "xterm", "x11-xserver-utils",
+                "fonts-noto-core",
+            ),
         ),
         verifyBinary = "usr/bin/openbox",
         launch = LaunchSpec.X11Vnc(
@@ -168,6 +211,13 @@ object DesktopCatalog {
         label = "Xfce4 (VNC)",
         packagesPerFamily = mapOf(
             PackageFamily.APK to listOf("tigervnc", "xfce4", "xfce4-terminal", "dbus-x11", "font-noto"),
+            // Debian: `xfce4` meta-package pulls the full desktop; dbus-x11
+            // is needed for proot-without-systemd; fonts-noto-core matches
+            // the Alpine font selection.
+            PackageFamily.APT to listOf(
+                "tigervnc-standalone-server", "xfce4", "xfce4-terminal", "dbus-x11",
+                "fonts-noto-core",
+            ),
         ),
         verifyBinary = "usr/bin/startxfce4",
         launch = LaunchSpec.X11Vnc(
