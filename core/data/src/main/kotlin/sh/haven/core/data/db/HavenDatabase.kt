@@ -13,6 +13,7 @@ import sh.haven.core.data.db.entities.PasteQueueEntry
 import sh.haven.core.data.db.entities.PortForwardRule
 import sh.haven.core.data.db.entities.SshKey
 import sh.haven.core.data.db.entities.StepCaConfig
+import sh.haven.core.data.db.entities.SyncProfile
 import sh.haven.core.data.db.entities.TunnelConfig
 import sh.haven.core.data.db.entities.WorkspaceItem
 import sh.haven.core.data.db.entities.WorkspaceProfile
@@ -31,8 +32,9 @@ import sh.haven.core.data.db.entities.WorkspaceProfile
         WorkspaceProfile::class,
         WorkspaceItem::class,
         StepCaConfig::class,
+        SyncProfile::class,
     ],
-    version = 53,
+    version = 54,
     exportSchema = true,
 )
 abstract class HavenDatabase : RoomDatabase() {
@@ -47,6 +49,7 @@ abstract class HavenDatabase : RoomDatabase() {
     abstract fun pasteQueueDao(): PasteQueueDao
     abstract fun workspaceDao(): WorkspaceDao
     abstract fun stepCaConfigDao(): StepCaConfigDao
+    abstract fun syncProfileDao(): SyncProfileDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -797,6 +800,36 @@ abstract class HavenDatabase : RoomDatabase() {
                 addColumnIfMissing(
                     db, "step_ca_configs", "oidcClientSecret",
                     "TEXT DEFAULT NULL",
+                )
+            }
+        }
+
+        /**
+         * Save rclone sync configurations for reuse (#159). Adds the
+         * `sync_profiles` table so the SFTP folder-sync dialog can
+         * persist a named src/dst/mode/filters bundle the user can
+         * recall on subsequent runs.
+         */
+        val MIGRATION_53_54 = object : Migration(53, 54) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `sync_profiles` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `srcFs` TEXT NOT NULL,
+                        `dstFs` TEXT NOT NULL,
+                        `mode` TEXT NOT NULL,
+                        `includePatterns` TEXT NOT NULL DEFAULT '',
+                        `excludePatterns` TEXT NOT NULL DEFAULT '',
+                        `minSize` TEXT,
+                        `maxSize` TEXT,
+                        `bandwidthLimit` TEXT,
+                        `createdAt` INTEGER NOT NULL,
+                        `lastRunAt` INTEGER,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
                 )
             }
         }

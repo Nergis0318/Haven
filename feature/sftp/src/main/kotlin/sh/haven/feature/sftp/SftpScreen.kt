@@ -1286,10 +1286,20 @@ fun SftpScreen(
 
     // Sync dialog
     if (showSyncDialog) {
+        val savedSyncProfiles by viewModel.savedSyncProfiles.collectAsState()
+        val activeSavedSyncProfileId by viewModel.activeSavedSyncProfileId.collectAsState()
         SyncDialog(
             source = syncDialogSource ?: "",
             remotes = availableRemotes,
-            onDismiss = { viewModel.dismissSyncDialog() },
+            savedProfiles = savedSyncProfiles,
+            activeSavedProfileId = activeSavedSyncProfileId,
+            onLoadSavedProfile = viewModel::setActiveSavedSyncProfileId,
+            onSaveProfile = viewModel::saveSyncProfile,
+            onDeleteSavedProfile = viewModel::deleteSyncProfile,
+            onDismiss = {
+                viewModel.setActiveSavedSyncProfileId(null)
+                viewModel.dismissSyncDialog()
+            },
             onStart = { config -> viewModel.startSync(config) },
         )
     }
@@ -1957,6 +1967,11 @@ fun SftpScreen(
 private fun SyncDialog(
     source: String,
     remotes: List<String>,
+    savedProfiles: List<sh.haven.core.data.db.entities.SyncProfile>,
+    activeSavedProfileId: String?,
+    onLoadSavedProfile: (String?) -> Unit,
+    onSaveProfile: (existingId: String?, name: String, config: SyncConfig) -> Unit,
+    onDeleteSavedProfile: (String) -> Unit,
     onDismiss: () -> Unit,
     onStart: (SyncConfig) -> Unit,
 ) {
@@ -1972,6 +1987,33 @@ private fun SyncDialog(
     var bwLimit by remember { mutableStateOf("") }
     var dryRun by remember { mutableStateOf(false) }
     var remoteExpanded by remember { mutableStateOf(false) }
+    var savedExpanded by remember { mutableStateOf(false) }
+    var showSaveAsDialog by remember { mutableStateOf(false) }
+
+    // Whenever the user picks a saved profile from the dropdown, populate
+    // every field. Splitting the dstFs back into remote+path is the
+    // inverse of the assembly at confirm time below.
+    LaunchedEffect(activeSavedProfileId) {
+        val id = activeSavedProfileId ?: return@LaunchedEffect
+        val p = savedProfiles.firstOrNull { it.id == id } ?: return@LaunchedEffect
+        srcFs = p.srcFs
+        val colonIdx = p.dstFs.indexOf(':')
+        if (colonIdx > 0) {
+            dstRemote = p.dstFs.substring(0, colonIdx)
+            dstPath = p.dstFs.substring(colonIdx + 1)
+        } else {
+            dstRemote = remotes.firstOrNull() ?: ""
+            dstPath = p.dstFs
+        }
+        mode = runCatching { SyncMode.valueOf(p.mode) }.getOrDefault(SyncMode.COPY)
+        includeText = p.includePatterns
+        excludeText = p.excludePatterns
+        minSize = p.minSize.orEmpty()
+        maxSize = p.maxSize.orEmpty()
+        bwLimit = p.bandwidthLimit.orEmpty()
+        showFilters = includeText.isNotBlank() || excludeText.isNotBlank() ||
+            minSize.isNotBlank() || maxSize.isNotBlank() || bwLimit.isNotBlank()
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1981,6 +2023,56 @@ private fun SyncDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
+                // Saved sync profiles (#159). Only renders the dropdown when
+                // there are saved entries — first-time users still see the
+                // dialog at the same starting size.
+                if (savedProfiles.isNotEmpty()) {
+                    val activeName = activeSavedProfileId?.let { id ->
+                        savedProfiles.firstOrNull { it.id == id }?.name
+                    } ?: stringResource(R.string.sftp_saved_sync_pick)
+                    ExposedDropdownMenuBox(
+                        expanded = savedExpanded,
+                        onExpandedChange = { savedExpanded = it },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        OutlinedTextField(
+                            value = activeName,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text(stringResource(R.string.sftp_saved_sync_label)) },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(savedExpanded) },
+                            singleLine = true,
+                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = savedExpanded,
+                            onDismissRequest = { savedExpanded = false },
+                        ) {
+                            savedProfiles.forEach { p ->
+                                DropdownMenuItem(
+                                    text = { Text(p.name) },
+                                    onClick = {
+                                        onLoadSavedProfile(p.id)
+                                        savedExpanded = false
+                                    },
+                                    trailingIcon = {
+                                        IconButton(
+                                            onClick = { onDeleteSavedProfile(p.id) },
+                                            modifier = Modifier.size(32.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Delete,
+                                                contentDescription = stringResource(R.string.common_delete),
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Source
                 OutlinedTextField(
                     value = srcFs,
@@ -2124,6 +2216,46 @@ private fun SyncDialog(
                     Checkbox(checked = dryRun, onCheckedChange = { dryRun = it })
                     Text(stringResource(R.string.sftp_dry_run))
                 }
+
+                // Save / Save-as row (#159). Only meaningful when src and a
+                // destination remote are both set — bare-form saves would
+                // round-trip with empty fields. Save overwrites the loaded
+                // saved profile (visible only when one is loaded). Save-as
+                // always prompts for a name.
+                if (srcFs.isNotBlank() && dstRemote.isNotBlank()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (activeSavedProfileId != null) {
+                            val loadedName = savedProfiles.firstOrNull { it.id == activeSavedProfileId }?.name
+                            TextButton(onClick = {
+                                if (loadedName != null) {
+                                    val dst = if (dstPath.isNotBlank()) "$dstRemote:$dstPath" else "$dstRemote:"
+                                    onSaveProfile(
+                                        activeSavedProfileId,
+                                        loadedName,
+                                        SyncConfig(
+                                            srcFs = srcFs,
+                                            dstFs = dst,
+                                            mode = mode,
+                                            filters = SyncFilters(
+                                                includePatterns = includeText.lines().filter { it.isNotBlank() },
+                                                excludePatterns = excludeText.lines().filter { it.isNotBlank() },
+                                                minSize = minSize.ifBlank { null },
+                                                maxSize = maxSize.ifBlank { null },
+                                                bandwidthLimit = bwLimit.ifBlank { null },
+                                            ),
+                                            dryRun = dryRun,
+                                        ),
+                                    )
+                                }
+                            }) {
+                                Text(stringResource(R.string.sftp_saved_sync_save))
+                            }
+                        }
+                        TextButton(onClick = { showSaveAsDialog = true }) {
+                            Text(stringResource(R.string.sftp_saved_sync_save_as))
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -2155,6 +2287,56 @@ private fun SyncDialog(
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
         },
     )
+
+    // Save-as nested dialog (#159). Prompts for a name then persists the
+    // current SyncDialog values as a fresh SyncProfile via onSaveProfile.
+    if (showSaveAsDialog) {
+        var newName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showSaveAsDialog = false },
+            title = { Text(stringResource(R.string.sftp_saved_sync_save_as_title)) },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text(stringResource(R.string.sftp_saved_sync_name)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val dst = if (dstPath.isNotBlank()) "$dstRemote:$dstPath" else "$dstRemote:"
+                        onSaveProfile(
+                            null,
+                            newName,
+                            SyncConfig(
+                                srcFs = srcFs,
+                                dstFs = dst,
+                                mode = mode,
+                                filters = SyncFilters(
+                                    includePatterns = includeText.lines().filter { it.isNotBlank() },
+                                    excludePatterns = excludeText.lines().filter { it.isNotBlank() },
+                                    minSize = minSize.ifBlank { null },
+                                    maxSize = maxSize.ifBlank { null },
+                                    bandwidthLimit = bwLimit.ifBlank { null },
+                                ),
+                                dryRun = dryRun,
+                            ),
+                        )
+                        showSaveAsDialog = false
+                    },
+                    enabled = newName.isNotBlank(),
+                ) { Text(stringResource(R.string.common_save)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveAsDialog = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)

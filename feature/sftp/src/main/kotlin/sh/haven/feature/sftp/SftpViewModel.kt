@@ -151,6 +151,7 @@ class SftpViewModel @Inject constructor(
     private val rcloneClient: RcloneClient,
     private val repository: ConnectionRepository,
     private val connectionLogRepository: ConnectionLogRepository,
+    private val syncProfileRepository: sh.haven.core.data.repository.SyncProfileRepository,
     private val preferencesRepository: UserPreferencesRepository,
     private val transportSelector: sh.haven.feature.sftp.transport.TransportSelector,
     private val ffmpegExecutor: sh.haven.core.ffmpeg.FfmpegExecutor,
@@ -529,6 +530,62 @@ class SftpViewModel @Inject constructor(
     private val _dryRunResult = MutableStateFlow<String?>(null)
     val dryRunResult: StateFlow<String?> = _dryRunResult.asStateFlow()
     fun dismissDryRunResult() { _dryRunResult.value = null }
+
+    /**
+     * Saved rclone sync configurations (#159). Most-recently-run first,
+     * collected from Room so changes in another dialog instance propagate
+     * straight to the dropdown. Exposed as a StateFlow with an empty
+     * starting value so the dialog can render before the first emit.
+     */
+    val savedSyncProfiles: StateFlow<List<sh.haven.core.data.db.entities.SyncProfile>> =
+        syncProfileRepository.observeAll()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Track the currently-loaded saved profile so [startSync] can stamp lastRunAt. */
+    private val _activeSavedSyncProfileId = MutableStateFlow<String?>(null)
+    val activeSavedSyncProfileId: StateFlow<String?> = _activeSavedSyncProfileId.asStateFlow()
+    fun setActiveSavedSyncProfileId(id: String?) { _activeSavedSyncProfileId.value = id }
+
+    /**
+     * Persist the dialog's current values as a saved sync profile. The id
+     * is generated when [existingId] is null (Save-as new) and reused
+     * when a saved profile is being overwritten (Save).
+     */
+    fun saveSyncProfile(
+        existingId: String?,
+        name: String,
+        config: SyncConfig,
+    ) {
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            val mode = when (config.mode) {
+                sh.haven.core.rclone.SyncMode.COPY -> "COPY"
+                sh.haven.core.rclone.SyncMode.SYNC -> "SYNC"
+                sh.haven.core.rclone.SyncMode.MOVE -> "MOVE"
+            }
+            val entity = sh.haven.core.data.db.entities.SyncProfile(
+                id = existingId ?: java.util.UUID.randomUUID().toString(),
+                name = name.trim(),
+                srcFs = config.srcFs,
+                dstFs = config.dstFs,
+                mode = mode,
+                includePatterns = config.filters.includePatterns.joinToString("\n"),
+                excludePatterns = config.filters.excludePatterns.joinToString("\n"),
+                minSize = config.filters.minSize,
+                maxSize = config.filters.maxSize,
+                bandwidthLimit = config.filters.bandwidthLimit,
+            )
+            syncProfileRepository.save(entity)
+            _activeSavedSyncProfileId.value = entity.id
+        }
+    }
+
+    fun deleteSyncProfile(id: String) {
+        viewModelScope.launch {
+            syncProfileRepository.delete(id)
+            if (_activeSavedSyncProfileId.value == id) _activeSavedSyncProfileId.value = null
+        }
+    }
 
     /** Whether the current folder contains playable media files (rclone only). */
     private val _hasMediaFiles = MutableStateFlow(false)
@@ -4650,6 +4707,11 @@ class SftpViewModel @Inject constructor(
 
     fun startSync(config: SyncConfig) {
         _showSyncDialog.value = false
+        // If the dialog ran from a saved profile, mark it as freshly used
+        // so it floats to the top of the dropdown on next observe.
+        _activeSavedSyncProfileId.value?.let { id ->
+            viewModelScope.launch { syncProfileRepository.touchLastRun(id) }
+        }
         viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             // lastError needs to survive past the polling loop so we can log

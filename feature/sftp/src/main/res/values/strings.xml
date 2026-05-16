@@ -88,6 +88,12 @@
     <string name="sftp_dry_run_results">Dry Run Results</string>
     <string name="sftp_start_for_real">Start for real</string>
     <string name="sftp_sync_cancelled">Sync cancelled</string>
+    <string name="sftp_saved_sync_label">Saved configuration</string>
+    <string name="sftp_saved_sync_pick">Pick a saved configuration</string>
+    <string name="sftp_saved_sync_save">Save</string>
+    <string name="sftp_saved_sync_save_as">Save as…</string>
+    <string name="sftp_saved_sync_save_as_title">Save sync configuration</string>
+    <string name="sftp_saved_sync_name">Name</string>
 
     <!-- FileListItem -->
     <string name="sftp_directory">Directory</string>
