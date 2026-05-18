@@ -42,6 +42,7 @@ class UserPreferencesRepository @Inject constructor(
     private val showCopyOutputButtonKey = booleanPreferencesKey("show_copy_output_button")
     private val keepScreenOnInTerminalKey = booleanPreferencesKey("keep_screen_on_in_terminal")
     private val connectionLoggingEnabledKey = booleanPreferencesKey("connection_logging_enabled")
+    private val alwaysShowAllTabsKey = booleanPreferencesKey("always_show_all_tabs")
     private val verboseLoggingEnabledKey = booleanPreferencesKey("verbose_logging_enabled")
     private val mouseInputEnabledKey = booleanPreferencesKey("mouse_input_enabled")
     private val mouseDragSelectsKey = booleanPreferencesKey("mouse_drag_selects")
@@ -150,6 +151,24 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setConnectionLoggingEnabled(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[connectionLoggingEnabledKey] = enabled
+        }
+    }
+
+    /**
+     * Show every bottom-nav tab regardless of whether the corresponding
+     * resource type has any data (issue #160 follow-up). Off by default:
+     * fresh installs see Connections + Settings only, and the other tabs
+     * fade in as the relevant profiles / keys / sessions appear. Power
+     * users with single-purpose installs can pin all tabs by turning
+     * this on.
+     */
+    val alwaysShowAllTabs: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[alwaysShowAllTabsKey] ?: false
+    }
+
+    suspend fun setAlwaysShowAllTabs(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[alwaysShowAllTabsKey] = enabled
         }
     }
 

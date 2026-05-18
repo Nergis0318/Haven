@@ -42,6 +42,8 @@ class MainActivity : AppCompatActivity() {
     @Inject lateinit var biometricAuthenticator: BiometricAuthenticator
     // Eagerly injected to trigger one-time password encryption migration
     @Inject lateinit var connectionRepository: ConnectionRepository
+    @Inject lateinit var sshKeyRepository: sh.haven.core.data.repository.SshKeyRepository
+    @Inject lateinit var stepCaConfigRepository: sh.haven.core.data.repository.StepCaConfigRepository
     // Published to FidoAuthenticator in onResume so NFC reader mode can
     // be enabled during FIDO2 SSH assertions. Without this, Nitrokey /
     // SoloKey / YubiKey-over-NFC flows never saw a Tag (#15).
@@ -210,6 +212,8 @@ class MainActivity : AppCompatActivity() {
                     HavenNavHost(
                         preferencesRepository = preferencesRepository,
                         connectionRepository = connectionRepository,
+                        sshKeyRepository = sshKeyRepository,
+                        stepCaConfigRepository = stepCaConfigRepository,
                         agentUiCommandBus = agentUiCommandBus,
                     )
                     // Floats above whatever screen is active so an

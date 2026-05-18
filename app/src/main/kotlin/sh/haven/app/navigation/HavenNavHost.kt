@@ -78,6 +78,8 @@ import kotlin.math.roundToInt
 fun HavenNavHost(
     preferencesRepository: UserPreferencesRepository,
     connectionRepository: ConnectionRepository,
+    sshKeyRepository: sh.haven.core.data.repository.SshKeyRepository,
+    stepCaConfigRepository: sh.haven.core.data.repository.StepCaConfigRepository,
     agentUiCommandBus: sh.haven.core.data.agent.AgentUiCommandBus,
 ) {
     // Desktop multi-session ViewModel — hoisted to nav scope so it survives tab switches
@@ -100,14 +102,34 @@ fun HavenNavHost(
         }
     }
 
-    // Auto-hide tabs for protocols with no configured connections
+    // Auto-hide tabs for protocols with no configured connections.
+    // Predicates layer on the always-shown Connections + Settings tabs:
+    // each per-screen flag short-circuits to true when alwaysShowAllTabs
+    // is on, which is the safety net for power users with single-purpose
+    // installs that empty repositories.
     val connections by connectionRepository.observeAll()
         .collectAsState(initial = emptyList())
+    val sshKeys by sshKeyRepository.observeAll()
+        .collectAsState(initial = emptyList())
+    val stepCaConfigs by stepCaConfigRepository.observeAll()
+        .collectAsState(initial = emptyList())
+    val alwaysShowAllTabs by preferencesRepository.alwaysShowAllTabs
+        .collectAsState(initial = false)
+
     val hasDesktopConnections = waylandRunning || desktopTabs.isNotEmpty() ||
         connections.any { it.isVnc || it.isRdp || it.isLocal }
+    val hasTerminalProfiles = connections.any { it.isTerminal }
+    val hasKeysOrCaConfigs = sshKeys.isNotEmpty() || stepCaConfigs.isNotEmpty()
+
     val screenOrderPref by preferencesRepository.screenOrder
         .collectAsState(initial = emptyList())
-    val screens = remember(screenOrderPref, hasDesktopConnections) {
+    val screens = remember(
+        screenOrderPref,
+        hasDesktopConnections,
+        hasTerminalProfiles,
+        hasKeysOrCaConfigs,
+        alwaysShowAllTabs,
+    ) {
         val ordered = if (screenOrderPref.isNotEmpty()) {
             val byRoute = screenOrderPref.mapNotNull { route ->
                 Screen.entries.find { it.route == route }
@@ -118,9 +140,23 @@ fun HavenNavHost(
             Screen.entries.toList()
         }
         ordered.filter { screen ->
+            if (alwaysShowAllTabs) return@filter true
             when (screen) {
+                // Always shown — Connections is the master list, Settings
+                // hosts the Always-show-all-tabs toggle (discoverability).
+                Screen.Connections, Screen.Settings -> true
+                // Pre-existing rule: hidden until any VNC / RDP / Wayland /
+                // local-shell connection or live desktop session exists.
                 Screen.Desktop -> hasDesktopConnections
-                else -> true
+                // SFTP file browser is useful even with no remote storage
+                // (local file paths work), so it stays visible.
+                Screen.Sftp -> true
+                // Terminal hides until there's any SSH/Mosh/ET/Reticulum
+                // profile (ConnectionProfile.isTerminal covers them all).
+                Screen.Terminal -> hasTerminalProfiles
+                // Keys hides until any SSH key or step-ca config exists;
+                // user can still reach key management from Settings.
+                Screen.Keys -> hasKeysOrCaConfigs
             }
         }
     }

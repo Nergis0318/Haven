@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Reorder
+import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.ScreenLockPortrait
@@ -578,6 +579,18 @@ fun SettingsScreen(
             title = stringResource(R.string.settings_screen_order_title),
             subtitle = stringResource(R.string.settings_screen_order_subtitle),
             onClick = { showScreenOrderDialog = true },
+        )
+        // Issue #160 — by default the bottom-nav hides tabs whose
+        // backing resource (terminal profiles, SSH keys, desktops) is
+        // empty. Power users with single-purpose installs can pin all
+        // tabs by turning this on.
+        val alwaysShowAllTabs by viewModel.alwaysShowAllTabs.collectAsState()
+        SettingsToggleItem(
+            icon = Icons.Filled.ViewModule,
+            title = "Always show all tabs",
+            subtitle = "Show every bottom-nav tab even when its category is empty",
+            checked = alwaysShowAllTabs,
+            onCheckedChange = viewModel::setAlwaysShowAllTabs,
         )
 
         SettingsSection(stringResource(R.string.settings_section_diagnostics))
