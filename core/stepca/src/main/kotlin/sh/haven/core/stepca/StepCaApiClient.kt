@@ -240,7 +240,7 @@ class StepCaApiClient @Inject constructor() {
 
             val resolved = provisioners.map { prov ->
                 val endpoints = try {
-                    OidcDiscovery.parse(plainGet(prov.configurationEndpoint))
+                    OidcDiscovery.parse(plainGet(OidcDiscovery.discoveryUrl(prov.configurationEndpoint)))
                 } catch (e: Throwable) {
                     return@withContext BootstrapResult.Failure(
                         "OIDC discovery failed for provisioner ${prov.name}: ${e.message}",

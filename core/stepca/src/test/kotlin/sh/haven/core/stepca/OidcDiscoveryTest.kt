@@ -38,6 +38,36 @@ class OidcDiscoveryTest {
         assertEquals("https://auth.example.com/application/o/token/", out.tokenEndpoint)
     }
 
+    /** #133 — Authentik's `configurationEndpoint` is just the issuer
+     *  URL, not the full discovery URL. Haven used to fetch it
+     *  verbatim and Authentik 404'd. discoveryUrl() must append
+     *  `/.well-known/openid-configuration` in that case. */
+    @Test
+    fun `discoveryUrl appends well-known path for issuer URLs`() {
+        assertEquals(
+            "https://auth.example.com/application/o/step-ca/.well-known/openid-configuration",
+            OidcDiscovery.discoveryUrl("https://auth.example.com/application/o/step-ca"),
+        )
+        // Trailing slash on the issuer is also legal — strip it before append.
+        assertEquals(
+            "https://auth.example.com/application/o/step-ca/.well-known/openid-configuration",
+            OidcDiscovery.discoveryUrl("https://auth.example.com/application/o/step-ca/"),
+        )
+    }
+
+    /** When the admin pasted the full discovery URL (Google's default,
+     *  Keycloak's docs example), leave it alone — appending would
+     *  produce `…/.well-known/openid-configuration/.well-known/openid-configuration`
+     *  which 404s on every IdP. */
+    @Test
+    fun `discoveryUrl leaves a complete discovery URL untouched`() {
+        val full = "https://accounts.google.com/.well-known/openid-configuration"
+        assertEquals(full, OidcDiscovery.discoveryUrl(full))
+        // Case-insensitive match — admins occasionally paste mixed-case URLs.
+        val mixed = "https://idp.example.com/.WELL-KNOWN/openid-configuration"
+        assertEquals(mixed, OidcDiscovery.discoveryUrl(mixed))
+    }
+
     @Test
     fun `missing token_endpoint throws with helpful message`() {
         val body = """
