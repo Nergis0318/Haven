@@ -19,6 +19,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
@@ -42,6 +44,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import sh.haven.app.R
+import sh.haven.app.desktop.DesktopManagerScreen
 import sh.haven.app.desktop.DesktopTab
 import sh.haven.app.desktop.DesktopViewModel
 import sh.haven.core.data.preferences.NavBlockMode
@@ -118,7 +121,46 @@ fun DesktopScreen(
         }
     }
 
+    // Manage toggle: a single TopAppBar action that flips between
+    // Sessions view (today's tabs + frame) and Manage view (distro
+    // picker + DE install/start/stop rows, moved from the old
+    // Connections topbar dialog in issue #162 Phase 3c).
+    //
+    // User override: a non-null userManageOverride takes precedence;
+    // when null, default to Manage when no sessions are running so the
+    // empty state lands on something actionable, otherwise Sessions.
+    var userManageOverride by remember { mutableStateOf<Boolean?>(null) }
+    val showManage = userManageOverride ?: tabs.isEmpty()
+
     Column(modifier = Modifier.fillMaxSize()) {
+        // Compact action row at the very top — surfaces the Manage
+        // toggle without consuming the full TopAppBar height. Stays
+        // visible while a session is running so the user can switch
+        // to Manage at any time.
+        Surface(tonalElevation = 1.dp) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(
+                    onClick = { userManageOverride = !showManage },
+                ) {
+                    Icon(
+                        imageVector = if (showManage) Icons.Filled.DesktopWindows else Icons.Filled.Tune,
+                        contentDescription = if (showManage) "Sessions" else "Manage desktops",
+                    )
+                }
+            }
+        }
+
+        if (showManage) {
+            DesktopManagerScreen(viewModel = desktopViewModel)
+            return@Column
+        }
+
         if (tabs.isEmpty()) {
             DesktopEmptyState()
         } else {

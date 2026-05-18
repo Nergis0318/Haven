@@ -22,6 +22,10 @@ import sh.haven.core.data.repository.ConnectionRepository
 import sh.haven.core.et.EtSessionManager
 import sh.haven.core.knock.KnockSequence
 import sh.haven.core.knock.PortKnocker
+import sh.haven.core.local.DesktopManager
+import sh.haven.core.local.LocalSessionManager
+import sh.haven.core.local.ProotManager
+import sh.haven.core.local.proot.Distro
 import sh.haven.core.mosh.MoshSessionManager
 import sh.haven.core.rdp.RdpSession
 import sh.haven.core.ssh.SshClient
@@ -58,7 +62,164 @@ class DesktopViewModel @Inject constructor(
     private val tunnelResolver: TunnelResolver,
     private val portKnocker: PortKnocker,
     private val agentUiCommandBus: sh.haven.core.data.agent.AgentUiCommandBus,
+    private val localSessionManager: LocalSessionManager,
 ) : ViewModel() {
+
+    // --- Distro / DE management (issue #162 Phase 3c) ---
+    //
+    // The Connections topbar used to host a dialog with the distro picker,
+    // rootfs setup state, and DE install/start/stop rows. That UI moved
+    // to a "Manage" view inside the Desktop tab in 3c (`DesktopManagerScreen`).
+    // These StateFlows + methods are the data layer the new screen reads;
+    // every accessor is a thin pass-through to ProotManager / DesktopManager
+    // so the source of truth stays in one place.
+
+    private val prootManager: ProotManager get() = localSessionManager.prootManager
+    private val desktopManager: DesktopManager get() = localSessionManager.desktopManager
+
+    val activeDistroId: StateFlow<String> get() = prootManager.activeDistroIdFlow
+
+    val rootfsSetupState: StateFlow<ProotManager.SetupState> get() = prootManager.state
+
+    val desktopSetupState: StateFlow<ProotManager.DesktopSetupState>
+        get() = prootManager.desktopState
+
+    val desktopStates: StateFlow<Map<ProotManager.DesktopEnvironment, DesktopManager.DesktopInstance>>
+        get() = desktopManager.desktops
+
+    val installedDistros: List<Distro> get() = prootManager.installedDistros
+    val availableDistros: List<Distro> get() = prootManager.availableDistros
+    val installedDesktops: Set<ProotManager.DesktopEnvironment>
+        get() = prootManager.installedDesktops
+
+    val isRootfsReady: Boolean get() = prootManager.isReady
+
+    fun switchActiveDistro(distroId: String) {
+        prootManager.setActiveDistroId(distroId)
+    }
+
+    /**
+     * Make [distro] the active distro and install its rootfs.
+     * Mirrors the revert-on-failure semantics from ConnectionsViewModel.addDistro:1472.
+     */
+    fun addDistro(distro: Distro) {
+        val previousActive = prootManager.activeDistroId
+        prootManager.setActiveDistroId(distro.id)
+        viewModelScope.launch {
+            try {
+                prootManager.installRootfs()
+                if (prootManager.state.value is ProotManager.SetupState.Error) {
+                    Log.w(TAG, "addDistro: ${distro.id} install failed, reverting to $previousActive")
+                    prootManager.setActiveDistroId(previousActive)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "addDistro: ${distro.id} install threw", e)
+                prootManager.setActiveDistroId(previousActive)
+            }
+        }
+    }
+
+    /**
+     * Delete a distro's rootfs. Stops any DEs running on it first so
+     * the session-viewer tabs don't outlive their backing rootfs.
+     */
+    fun deleteDistro(distroId: String) {
+        if (prootManager.activeDistroId == distroId) {
+            desktopManager.stopAll()
+        }
+        prootManager.deleteDistro(distroId)
+    }
+
+    /**
+     * Install a desktop environment on the active distro. Optional addons
+     * land in a follow-up `installAddons` call when the primary install
+     * succeeds — same shape ConnectionsViewModel.setupDesktop had before
+     * the 3c move.
+     */
+    fun setupDesktop(
+        vncPassword: String,
+        de: ProotManager.DesktopEnvironment = ProotManager.DesktopEnvironment.XFCE4,
+        addons: Set<ProotManager.DesktopAddon> = emptySet(),
+    ) {
+        viewModelScope.launch {
+            prootManager.setupDesktop(vncPassword, de)
+            if (addons.isNotEmpty() &&
+                prootManager.desktopState.value is ProotManager.DesktopSetupState.Complete
+            ) {
+                prootManager.installAddons(addons)
+            }
+        }
+    }
+
+    fun uninstallDesktop(de: ProotManager.DesktopEnvironment) {
+        viewModelScope.launch {
+            desktopManager.stopDesktop(de)
+            prootManager.uninstallDesktop(de)
+            prootManager.resetDesktopState()
+        }
+    }
+
+    /**
+     * Start a DE and add it as a tab in the Desktop session viewer.
+     * Replaces the old _navigateToVnc → ConnectionsScreen → DesktopViewModel
+     * round-trip with a direct `addVncSession` (or `addWaylandTab`) call.
+     */
+    fun startDesktop(de: ProotManager.DesktopEnvironment) {
+        viewModelScope.launch {
+            val shellCmd = preferencesRepository.waylandShellCommand.first()
+            Log.d(TAG, "startDesktop: ${de.label} shell=$shellCmd")
+            withContext(Dispatchers.IO) {
+                desktopManager.startDesktop(de, shellCmd)
+            }
+            if (de.isNative) {
+                kotlinx.coroutines.delay(2000)
+                addWaylandTab()
+                return@launch
+            }
+            val port = desktopManager.getVncPort(de) ?: 5901
+            // Wait up to 8 s for the Xvnc server to start listening.
+            val ready = withContext(Dispatchers.IO) {
+                repeat(16) {
+                    try {
+                        java.net.Socket("127.0.0.1", port).close()
+                        return@withContext true
+                    } catch (_: Exception) {
+                        kotlinx.coroutines.delay(500)
+                    }
+                }
+                false
+            }
+            if (!ready) {
+                Log.e(TAG, "startDesktop: VNC port $port not listening after 8s")
+                desktopManager.stopDesktop(de)
+                return@launch
+            }
+            val pwd = prootManager.storedVncPassword
+                ?: connectionRepository.getAll()
+                    .firstOrNull { it.isVnc && it.host == "localhost" }
+                    ?.vncPassword
+            addVncSession(
+                host = "localhost",
+                port = port,
+                password = pwd,
+                username = null,
+                sshForward = false,
+                sshSessionId = null,
+                profileId = null,
+                colorDepth = "BPP_24_TRUE",
+            )
+        }
+    }
+
+    fun stopDesktop(de: ProotManager.DesktopEnvironment) {
+        viewModelScope.launch(Dispatchers.IO) {
+            desktopManager.stopDesktop(de)
+        }
+    }
+
+    fun resetDesktopSetupState() {
+        prootManager.resetDesktopState()
+    }
 
     init {
         // Workspace launcher posts here when a DESKTOP / WAYLAND item
