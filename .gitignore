@@ -20,6 +20,9 @@ com/jcraft/jsch/
 build-proot/build-*/
 build-proot/dl/
 core/local/src/main/jniLibs/*/libproot*.so
+# Wayvnc capture-fallback shim — rebuilt by core/local's buildWayvncShim
+# Gradle task from wayland-android/wayvnc-shim/libhaven_wayvnc_shim.c.
+core/local/src/main/assets/wayvnc-shim/*/libhaven_wayvnc_shim.so
 build-ffmpeg/build-*/
 build-ffmpeg/dl/
 build-ffmpeg/src/

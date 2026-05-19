@@ -68,8 +68,30 @@ val buildProot by tasks.registering(Exec::class) {
     environment("PROOT_OUTPUT", jniLibsDir.absolutePath)
 }
 
+// Build the wayvnc capture-fallback shim (one .so per ABI) and stage
+// it under src/main/assets/wayvnc-shim/<abi>/ so the APK packager
+// picks it up. The shim is loaded inside the proot rootfs via
+// LD_PRELOAD by the nested-Wayland launch script — see
+// DesktopManager.launchNestedWayland for the call site, and
+// wayland-android/wayvnc-shim/libhaven_wayvnc_shim.c for the why.
+//
+// Required toolchains: gcc-aarch64-linux-gnu and gcc-x86-64-linux-gnu
+// (standard Debian/Ubuntu packages — F-Droid's buildserver has them).
+val buildWayvncShim by tasks.registering(Exec::class) {
+    val script = rootProject.file("wayland-android/build-wayvnc-shim.sh")
+    val src = rootProject.file("wayland-android/wayvnc-shim/libhaven_wayvnc_shim.c")
+    val assetsDir = file("src/main/assets/wayvnc-shim")
+
+    inputs.file(script)
+    inputs.file(src)
+    outputs.dir(assetsDir)
+
+    workingDir = rootProject.file("wayland-android")
+    commandLine("bash", "build-wayvnc-shim.sh")
+}
+
 tasks.named("preBuild") {
-    dependsOn(buildProot)
+    dependsOn(buildProot, buildWayvncShim)
 }
 
 kotlin {

@@ -560,10 +560,10 @@ object DesktopCatalog {
 
                 # Headless output: `mode` would auto-enable on most
                 # wlroots versions, but on 0.19+ headless the output
-                # stays DPMS-off until an explicit enable. wayvnc's
-                # ext-image-copy-capture-v1 needs the output enabled
-                # before it'll advertise buffer formats.
-                output HEADLESS-1 mode 1280x720@60
+                # stays DPMS-off until an explicit enable. Sway 1.11
+                # rejects "1280x720@60" as "Invalid mode refresh rate" —
+                # the rate suffix needs the explicit "Hz" tag.
+                output HEADLESS-1 mode 1280x720@60Hz
                 output HEADLESS-1 scale 1
                 output HEADLESS-1 enable
                 output HEADLESS-1 dpms on

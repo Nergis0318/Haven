@@ -223,12 +223,17 @@ class DesktopManager @Inject constructor(
         processes[de]?.destroyForcibly()
         processes.remove(de)
         if (launch !is LaunchSpec.NativeCompositor) {
-            // X11 launches leak Xvnc when the parent proot dies; nested
-            // wlroots launches use the headless backend (no Xvnc) and the
-            // compositor+wayvnc tree exits cleanly with destroyForcibly,
-            // so only run the orphan-Xvnc sweep on X11.
+            // destroyForcibly() only kills the proot launch shell —
+            // children (Xvnc / sway / Hyprland / niri / wayvnc / foot)
+            // become orphans reparented to the app, kept running until
+            // they exit on their own. Sweep them explicitly so a
+            // subsequent start_desktop doesn't hit "Another wayvnc
+            // process is already running" on the control socket or a
+            // wedged port 590x.
             if (launch is LaunchSpec.X11Vnc) {
                 killOrphanedXvnc(instance.displayNumber)
+            } else if (launch is LaunchSpec.NestedWayland) {
+                killOrphanedNestedWayland(launch.compositorCmd)
             }
             releaseDisplay(instance.displayNumber)
         }
@@ -349,6 +354,22 @@ class DesktopManager @Inject constructor(
         val launch = de.spec.launch as LaunchSpec.NestedWayland
         val xdgInProot = "/tmp/xdg-runtime-$display"
 
+        // wlroots' SHM allocator (the only buffer path on the headless
+        // backend with WLR_RENDERER=pixman) calls POSIX shm_open() which
+        // glibc maps to "/dev/shm/<random>". Android's /dev tmpfs has no
+        // /dev/shm entry, so every buffer allocation fails:
+        //   [wlr] [render/swapchain.c:105] Failed to allocate buffer
+        // and the headless output never moves out of OUTPUT_POWER_OFF —
+        // wayvnc connects but "Pauses frame capture" and the VNC client
+        // sees only a grey rectangle. Bind a writable directory from
+        // the app cache as /dev/shm inside the proot.
+        val devShmHost = File(context.cacheDir, "dev-shm").apply {
+            mkdirs()
+            setReadable(true, false)
+            setWritable(true, false)
+            setExecutable(true, false)
+        }
+
         // Wlroots headless setup:
         //  - WLR_BACKENDS=headless: skip DRM/libinput entirely.
         //  - WLR_HEADLESS_OUTPUTS=1: create one virtual output at boot.
@@ -413,20 +434,22 @@ class DesktopManager @Inject constructor(
             append("fi ; ")
             append("echo '[haven] compositor up, starting wayvnc on $port' ; ")
             append("export WAYLAND_DISPLAY=wayland-1 ; ")
-            // wayvnc 0.9.1 queries the compositor for ext-image-copy-capture
-            // buffer formats at session-create time. On the wlroots
-            // headless backend the formats only become available after
-            // the compositor has fully realized the virtual output —
-            // before that, the format event list is empty and wayvnc
-            // fails with "No supported buffer formats were found". A
-            // ~2 s grace period after the wayland socket appears is
-            // empirically enough; foot (auto-launched by the seeded
-            // sway/hyprland configs) has rendered its first frame and
-            // the headless output advertises the SHM formats by then.
+            // ~2 s grace period after the wayland socket appears, then
+            // launch wayvnc. wayvnc 0.5 (Debian Bookworm) doesn't accept
+            // --max-fps; restrict to flags supported across 0.5–0.9.
+            // wayvnc exits when the compositor dies.
             append("sleep 2 ; ")
-            // wayvnc 0.5 (Debian Bookworm) doesn't accept --max-fps;
-            // restrict to flags supported across the version range
-            // 0.5–0.9. wayvnc exits when the compositor dies.
+            // Capture-fallback shim: hides ext-image-copy-capture-v1
+            // from wayvnc so it falls back to zwlr_screencopy_manager_v1.
+            // The wlroots-0.19 headless backend reports zero buffer
+            // formats on the ext path and wayvnc would bail with
+            // "No supported buffer formats were found". The shim is
+            // extracted in ProotManager.setupDesktop when a nested
+            // Wayland DE is installed; a missing file does not block
+            // the launch (LD_PRELOAD silently ignores nonexistent
+            // libraries via the ld.so error path — wayvnc will still
+            // come up, just back on the ext path that may grey-screen).
+            append("export LD_PRELOAD=/usr/local/lib/haven/libhaven_wayvnc_shim.so ; ")
             append("exec wayvnc --render-cursor 0.0.0.0 $port")
         }
 
@@ -435,6 +458,7 @@ class DesktopManager @Inject constructor(
             "-r", rootfsDir.absolutePath,
             "-b", "/dev", "-b", "/proc", "-b", "/sys",
             "-b", "${context.cacheDir.absolutePath}:/tmp",
+            "-b", "${devShmHost.absolutePath}:/dev/shm",
         )
         prootArgs.addAll(listOf("-w", "/root", "/bin/sh", "-c", shellCmd))
 
@@ -647,6 +671,54 @@ class DesktopManager @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "killOrphanedXvnc($display) failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Sweep the rootfs's compositor + wayvnc + foot leftovers after the
+     * proot launcher has been destroyForcibly()'d. Without this they
+     * survive as orphans and block the next start_desktop on the
+     * wayvncctl control socket. compositorCmd is the binary name from
+     * LaunchSpec.NestedWayland (sway / Hyprland / niri); foot is the
+     * auto-launched terminal; swaynag pops up on sway config errors.
+     *
+     * Matched via /proc/<pid>/cmdline rather than COMM because Android's
+     * toybox `ps -A -o comm` wraps proot-launched binaries in [brackets]
+     * (the kernel sees libproot_loader.so as the loaded ELF and only
+     * sets the comm via prctl), so an exact equality match on COMM
+     * misses them. cmdline always reflects the program's own argv[0]
+     * (e.g. "/usr/sbin/wayvnc --render-cursor 0.0.0.0 5901").
+     */
+    private fun killOrphanedNestedWayland(compositorCmd: String) {
+        // Match against the basename of cmdline argv[0]. The targets
+        // include both the active compositor and its standard children
+        // (wayvnc, foot, swaynag) so the next launch starts clean.
+        val targets = listOf(compositorCmd, "wayvnc", "foot", "swaynag")
+        val caseArm = targets.joinToString("|") { "\"$it\"" }
+        val scanScript = """
+            for p in /proc/[0-9]*; do
+                [ -r ${'$'}p/cmdline ] || continue
+                first=${'$'}(tr '\0' ' ' < ${'$'}p/cmdline 2>/dev/null | awk '{print ${'$'}1}')
+                case "${'$'}{first##*/}" in $caseArm) echo "${'$'}{p##*/}";; esac
+            done
+        """.trimIndent()
+        try {
+            val proc = ProcessBuilder("sh", "-c", scanScript)
+                .redirectErrorStream(true).start()
+            val pids = proc.inputStream.bufferedReader().readText().trim()
+            proc.waitFor()
+            if (pids.isNotEmpty()) {
+                Log.d(TAG, "Killing nested-wayland orphans ($compositorCmd tree): ${pids.replace('\n', ' ')}")
+                for (pid in pids.lines()) {
+                    try {
+                        ProcessBuilder("kill", "-9", pid.trim()).start().waitFor()
+                    } catch (_: Exception) {}
+                }
+            } else {
+                Log.d(TAG, "No nested-wayland orphans for $compositorCmd")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "killOrphanedNestedWayland($compositorCmd) failed: ${e.message}")
         }
     }
 

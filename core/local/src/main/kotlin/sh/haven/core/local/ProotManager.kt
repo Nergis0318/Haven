@@ -1359,6 +1359,34 @@ chmod +x /root/.vnc/xstartup""")
                 Log.d(TAG, "[de-config ${de.spec.id}] seeded $relPath (${content.length} bytes)")
             }
 
+            // Nested-Wayland DEs (Sway / Hyprland / Niri) need the
+            // wayvnc capture-fallback shim staged in the rootfs so the
+            // launch script's LD_PRELOAD picks it up. The shim blocks
+            // ext-image-copy-capture-v1 from wayvnc so it falls back to
+            // zwlr_screencopy, which the wlroots headless backend
+            // actually advertises buffer formats for. Overwrite on each
+            // install so a Haven update can ship a newer shim without
+            // user intervention.
+            if (de.spec.launch is LaunchSpec.NestedWayland) {
+                val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "x86_64" }
+                if (abi != null) {
+                    val asset = "wayvnc-shim/$abi/libhaven_wayvnc_shim.so"
+                    val target = File(activeRootfsDir, "usr/local/lib/haven/libhaven_wayvnc_shim.so")
+                    target.parentFile?.mkdirs()
+                    try {
+                        context.assets.open(asset).use { input ->
+                            target.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        target.setReadable(true, false)
+                        Log.d(TAG, "[de-config ${de.spec.id}] staged wayvnc shim from $asset (${target.length()} bytes)")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "[de-config ${de.spec.id}] failed to stage wayvnc shim: ${e.message}")
+                    }
+                } else {
+                    Log.w(TAG, "[de-config ${de.spec.id}] no wayvnc shim asset for ABI ${android.os.Build.SUPPORTED_ABIS.toList()}")
+                }
+            }
+
             Log.d(TAG, "[de-config ${de.spec.id}] complete")
             installLogRepository.logEvent(
                 distroId = activeDistro.id,
