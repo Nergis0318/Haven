@@ -36,6 +36,8 @@ import java.io.InputStreamReader
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.concurrent.thread
@@ -55,11 +57,29 @@ private const val TAG = "McpServer"
  *
  * ### Protocol
  *
- * Implements the 2025-06-18 **Streamable HTTP** transport in
- * stateless mode: a single `POST /mcp` endpoint that accepts one
- * JSON-RPC 2.0 message and responds with a single JSON body. No SSE,
- * no WebSocket, no session management. This is the smallest
- * implementation that satisfies the MCP spec for a tool-only server.
+ * Implements the 2025-06-18 **Streamable HTTP** transport. A single
+ * `POST /mcp` endpoint accepts one JSON-RPC 2.0 message and responds
+ * with a single JSON body. No SSE, no WebSocket.
+ *
+ * ### Sessions
+ *
+ * The server is process-stateful per the streamable-HTTP spec:
+ * `initialize` mints a UUID, returned in the `Mcp-Session-Id` response
+ * header. The client echoes it on subsequent requests so the server
+ * can re-resolve the paired client identity without re-prompting.
+ * When the server doesn't recognise a presented session id (because
+ * the process restarted, lost its in-memory session map, etc.) it
+ * responds with HTTP **404** instead of HTTP 200 + JSON-RPC error
+ * — the spec-defined signal that tells the client to re-`initialize`
+ * automatically. Without this, Claude Code's MCP transport sees a
+ * generic JSON-RPC -32001 and gets wedged until the user tears down
+ * its session entirely.
+ *
+ * Clients that don't send `Mcp-Session-Id` still work via a legacy
+ * fallback that consults the last-seen `clientInfo.name` from this
+ * process's most recent `initialize`. That fallback is the source of
+ * the "won't reconnect after app restart" symptom and exists only
+ * for stragglers.
  *
  * Supported methods:
  * - `initialize` — protocol handshake, returns server info + tools capability
@@ -110,15 +130,28 @@ class McpServer @Inject constructor(
 ) : Closeable {
 
     /**
-     * Last `clientInfo.name` we saw on an `initialize` request. Best
-     * effort: in the stateless transport we can't actually pin a name
-     * to a specific later call, but in practice clients open one
-     * connection and then make a small burst of requests, so the most
-     * recent hint is usually the right one. Stored separately from any
-     * per-request state so it survives across handler invocations.
+     * Last `clientInfo.name` we saw on an `initialize` request. Used
+     * only as a legacy fallback when the client doesn't send
+     * `Mcp-Session-Id`. Preferred path is [sessions]: every
+     * non-initialize request that carries a recognised session id
+     * resolves to a clientName without consulting this field.
      */
     @Volatile
     private var lastClientHint: String? = null
+
+    /**
+     * Session map for the streamable-HTTP transport. `initialize`
+     * mints a UUID and stores [Session] here; subsequent requests
+     * that present the same id in `Mcp-Session-Id` resolve to the
+     * paired clientName. Entries older than [SESSION_TTL_MS] are
+     * purged at next initialize to keep the map bounded.
+     *
+     * Unbounded growth is unlikely in practice (one entry per
+     * client-initialize across the lifetime of the foreground process)
+     * but the TTL guards against pathological churn.
+     */
+    private data class Session(val clientName: String, val createdAt: Long)
+    private val sessions = ConcurrentHashMap<String, Session>()
 
     /**
      * In-memory mirror of [UserPreferencesRepository.mcpAllowedClients]
@@ -326,6 +359,7 @@ class McpServer @Inject constructor(
 
                 // Parse headers
                 var contentLength = 0
+                var mcpSessionIdHeader: String? = null
                 while (true) {
                     val line = reader.readLine() ?: break
                     if (line.isEmpty()) break
@@ -333,8 +367,9 @@ class McpServer @Inject constructor(
                     if (colon > 0) {
                         val name = line.substring(0, colon).trim().lowercase()
                         val value = line.substring(colon + 1).trim()
-                        if (name == "content-length") {
-                            contentLength = value.toIntOrNull() ?: 0
+                        when (name) {
+                            "content-length" -> contentLength = value.toIntOrNull() ?: 0
+                            "mcp-session-id" -> mcpSessionIdHeader = value.takeIf { it.isNotEmpty() }
                         }
                     }
                 }
@@ -351,8 +386,15 @@ class McpServer @Inject constructor(
                             }
                             String(buf, 0, read)
                         } else ""
-                        val response = handleJsonRpc(body)
-                        writeJson(s, 200, response)
+                        val outcome = handleJsonRpc(body, mcpSessionIdHeader)
+                        if (outcome.httpStatus == 404) {
+                            // Streamable-HTTP signal: presented session id
+                            // is unknown. Empty body — the client treats
+                            // this as "session expired, re-initialize".
+                            writeJson(s, 404, "", null)
+                        } else {
+                            writeJson(s, outcome.httpStatus, outcome.body, outcome.responseSessionId)
+                        }
                     }
                     method == "GET" && (path == "/mcp" || path == "/") -> {
                         // SSE channel for server-initiated messages — not
@@ -380,18 +422,48 @@ class McpServer @Inject constructor(
     }
 
     /**
-     * Parse a JSON-RPC 2.0 request and return the response body. Visible
-     * to tests in the same module so the consent gate, error mapping, and
-     * audit-outcome plumbing can be exercised without sockets.
+     * Test-friendly overload — drives the JSON-RPC layer without a
+     * session id, exercising the legacy fallback path. Existing tests
+     * call this signature. Production traffic goes through the
+     * (body, sessionId) overload via [handleClient].
      */
-    internal fun handleJsonRpc(body: String): String {
+    internal fun handleJsonRpc(body: String): String =
+        handleJsonRpc(body, requestSessionId = null).body
+
+    /**
+     * Outcome of a JSON-RPC request as seen by the HTTP layer.
+     *
+     * - [httpStatus] is normally 200; becomes 404 when an unknown
+     *   `Mcp-Session-Id` is presented, so the client per spec
+     *   re-initialises automatically.
+     * - [body] is the JSON-RPC reply body (may be empty for
+     *   notifications or 404s).
+     * - [responseSessionId] is set by a successful `initialize`; the
+     *   HTTP layer echoes it back to the client in the
+     *   `Mcp-Session-Id` response header.
+     */
+    internal data class JsonRpcOutcome(
+        val httpStatus: Int,
+        val body: String,
+        val responseSessionId: String?,
+    )
+
+    /**
+     * Parse a JSON-RPC 2.0 request and return the response. Visible
+     * to tests in the same module so the consent gate, error mapping,
+     * and audit-outcome plumbing can be exercised without sockets.
+     *
+     * [requestSessionId] is the value of the inbound `Mcp-Session-Id`
+     * header, or null when the client doesn't send one (legacy path).
+     */
+    internal fun handleJsonRpc(body: String, requestSessionId: String?): JsonRpcOutcome {
         if (body.isBlank()) {
-            return jsonRpcError(null, -32700, "Parse error: empty body")
+            return JsonRpcOutcome(200, jsonRpcError(null, -32700, "Parse error: empty body"), null)
         }
         val req = try {
             JSONObject(body)
         } catch (e: Exception) {
-            return jsonRpcError(null, -32700, "Parse error: ${e.message}")
+            return JsonRpcOutcome(200, jsonRpcError(null, -32700, "Parse error: ${e.message}"), null)
         }
         val id = req.opt("id") // may be null for notifications
         val method = req.optString("method")
@@ -401,11 +473,14 @@ class McpServer @Inject constructor(
         // need to return an empty 200 for the HTTP layer. Return "" for those.
         val isNotification = !req.has("id")
 
-        // Capture client name from `initialize` so subsequent audit
-        // rows can attribute calls to the right MCP client. Best
-        // effort: stateless transport, so this is just "the most
-        // recent name we saw."
-        if (method == "initialize") {
+        // Resolve effective clientName before dispatch. Prefer the
+        // session-id path (carries through app restarts as long as the
+        // process lives); fall back to the legacy `clientInfo.name`
+        // capture only when no session id was presented.
+        val sessionClient: String? = requestSessionId?.let { sessions[it]?.clientName }
+        if (sessionClient != null) {
+            lastClientHint = sessionClient
+        } else if (method == "initialize") {
             params.optJSONObject("clientInfo")?.optString("name")
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { lastClientHint = it }
@@ -415,10 +490,33 @@ class McpServer @Inject constructor(
         var outcome = AgentAuditEvent.Outcome.OK
         var errorMessage: String? = null
         var resultJson: JSONObject? = null
+        var newSessionId: String? = null
         val response = try {
-            val result = dispatch(method, params)
+            val result = dispatch(method, params, requestSessionId)
             if (result is JSONObject) resultJson = result
+            // A successful `initialize` mints a new session id we'll
+            // hand back to the client in the response header. The
+            // client echoes it on subsequent requests and we resolve
+            // it back to a clientName without re-prompting.
+            if (method == "initialize" && result is JSONObject) {
+                val clientName = lastClientHint
+                if (!clientName.isNullOrBlank()) {
+                    purgeExpiredSessions()
+                    val sid = UUID.randomUUID().toString()
+                    sessions[sid] = Session(clientName, System.currentTimeMillis())
+                    newSessionId = sid
+                }
+            }
             if (isNotification) "" else jsonRpcResult(id, result)
+        } catch (e: SessionExpiredError) {
+            // Streamable-HTTP signal: the client presented a session
+            // id we don't recognise (we restarted; map was cleared).
+            // Return 404 with empty body — the spec-defined cue that
+            // tells the client to re-`initialize` automatically
+            // instead of propagating an opaque -32001 to the user.
+            outcome = AgentAuditEvent.Outcome.ERROR
+            errorMessage = e.message
+            return JsonRpcOutcome(404, "", null)
         } catch (e: ConsentDeniedError) {
             // User denied via the bottom-sheet prompt, or no foreground
             // activity was available to ask. Audit it as DENIED so the
@@ -468,11 +566,31 @@ class McpServer @Inject constructor(
             )
         }
 
-        return response
+        return JsonRpcOutcome(200, response, newSessionId)
     }
 
-    /** Dispatch an MCP method to its handler. */
-    private fun dispatch(method: String, params: JSONObject): Any? {
+    /**
+     * Drop session entries older than [SESSION_TTL_MS]. Called from
+     * the `initialize` success path so the work stays off the hot
+     * dispatch path. The map is small in normal use; this is a
+     * belt-and-braces guard against unbounded growth under churn.
+     */
+    private fun purgeExpiredSessions() {
+        val cutoff = System.currentTimeMillis() - SESSION_TTL_MS
+        val it = sessions.entries.iterator()
+        while (it.hasNext()) {
+            if (it.next().value.createdAt < cutoff) it.remove()
+        }
+    }
+
+    /**
+     * Dispatch an MCP method to its handler.
+     *
+     * [requestSessionId] is the inbound `Mcp-Session-Id` header. When
+     * present but unrecognised we throw [SessionExpiredError] so the
+     * HTTP layer returns 404 and the client per spec re-initialises.
+     */
+    private fun dispatch(method: String, params: JSONObject, requestSessionId: String?): Any? {
         // Pairing gate: every method except the pair-or-fail path itself
         // requires the calling client to be in the allowlist. `ping` is
         // intentionally allowed unauthenticated so a client can probe
@@ -481,7 +599,16 @@ class McpServer @Inject constructor(
         // sent right after `initialize` and is exempt so a paired client
         // that just finished its handshake doesn't silently fail it.
         if (method != "initialize" && method != "ping" && method != "notifications/initialized") {
-            val client = lastClientHint
+            val sessionClient = requestSessionId?.let { sessions[it]?.clientName }
+            if (requestSessionId != null && sessionClient == null) {
+                // The client sent a session id we don't recognise.
+                // Almost always means the server restarted while the
+                // client cached its id. Returning -32001 here would
+                // wedge the client; SessionExpiredError → HTTP 404
+                // tells it to re-initialise.
+                throw SessionExpiredError()
+            }
+            val client = sessionClient ?: lastClientHint
             if (client.isNullOrBlank() || client !in allowedClients) {
                 throw McpError(
                     -32001,
@@ -686,11 +813,17 @@ class McpServer @Inject constructor(
 
     // --- HTTP response helpers ---
 
-    private fun writeJson(socket: Socket, status: Int, body: String) {
+    private fun writeJson(
+        socket: Socket,
+        status: Int,
+        body: String,
+        sessionId: String? = null,
+    ) {
         val bytes = body.toByteArray(Charsets.UTF_8)
         val statusLine = when (status) {
             200 -> "200 OK"
             204 -> "204 No Content"
+            404 -> "404 Not Found"
             else -> "$status OK"
         }
         val headers = buildString {
@@ -698,7 +831,11 @@ class McpServer @Inject constructor(
             append("Content-Type: application/json; charset=utf-8\r\n")
             append("Content-Length: ${bytes.size}\r\n")
             append("Access-Control-Allow-Origin: *\r\n")
+            // Expose Mcp-Session-Id so browser-based clients (none in
+            // v1, but cheap insurance) can read it from the response.
+            append("Access-Control-Expose-Headers: Mcp-Session-Id\r\n")
             append("Cache-Control: no-store\r\n")
+            if (sessionId != null) append("Mcp-Session-Id: $sessionId\r\n")
             append("\r\n")
         }
         val out = socket.getOutputStream()
@@ -723,6 +860,9 @@ class McpServer @Inject constructor(
     }
 }
 
+/** Session entries older than this are evicted on the next initialize. */
+private const val SESSION_TTL_MS: Long = 24L * 60L * 60L * 1000L
+
 /** Lightweight error type carrying a JSON-RPC error code. */
 open class McpError(val code: Int, message: String) : RuntimeException(message)
 
@@ -734,3 +874,17 @@ open class McpError(val code: Int, message: String) : RuntimeException(message)
  */
 class ConsentDeniedError(toolName: String) :
     McpError(-32000, "User denied: $toolName")
+
+/**
+ * Raised by [McpServer.dispatch] when a non-initialize request
+ * presents an `Mcp-Session-Id` the server doesn't recognise. The HTTP
+ * layer maps this to **404**, which is the streamable-HTTP-spec signal
+ * that tells the client to re-`initialize` and retry — fixing the
+ * "won't reconnect after Haven restart without dropping the Claude
+ * Code session" wedge.
+ *
+ * The error message is informational only; clients react to the 404
+ * status, not the body.
+ */
+class SessionExpiredError :
+    McpError(-32001, "MCP session expired; re-initialize")

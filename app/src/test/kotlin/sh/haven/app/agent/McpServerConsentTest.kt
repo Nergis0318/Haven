@@ -491,4 +491,105 @@ class McpServerConsentTest {
             io.mockk.coVerify { prefs.addMcpAllowedClient("fresh-client") }
         }
     }
+
+    // --- Mcp-Session-Id streamable-HTTP session flow ---
+    //
+    // The pre-fix behaviour was: handleClient parsed the request body
+    // and called dispatch with the global `lastClientHint`. On Haven
+    // restart `lastClientHint` resets to null, but Claude Code's
+    // cached transport keeps sending tools/* calls without re-doing
+    // `initialize`. Every call hit dispatch's "not paired" gate,
+    // surfaced -32001 to the user, and stayed wedged until they
+    // dropped the whole Claude Code session (which forced the
+    // transport to re-init).
+    //
+    // The fix wires `Mcp-Session-Id` per the 2025-06-18 streamable-
+    // HTTP spec. These tests pin the new behaviour:
+    //  - successful `initialize` returns a UUID in responseSessionId
+    //  - a request carrying that UUID resolves clientName from the
+    //    session map (not from the global lastClientHint)
+    //  - a request carrying an unknown UUID returns httpStatus=404
+    //    so the client per spec re-initialises automatically
+    //  - a request without any Mcp-Session-Id header still works via
+    //    the legacy fallback (backwards compat with older clients)
+
+    @Test
+    fun `initialize returns Mcp-Session-Id in JsonRpcOutcome`() {
+        val (server, _) = newServer()
+        val outcome = server.handleJsonRpc(initBody(), requestSessionId = null)
+        assertEquals(200, outcome.httpStatus)
+        assertEquals(
+            "initialize should mint a session id",
+            true,
+            !outcome.responseSessionId.isNullOrBlank(),
+        )
+    }
+
+    @Test
+    fun `request with valid session id resolves without falling back to lastClientHint`() {
+        val (server, _) = newServer()
+        val initOutcome = server.handleJsonRpc(initBody(), requestSessionId = null)
+        val sid = initOutcome.responseSessionId
+            ?: error("initialize did not return a session id")
+
+        // Spec-shaped tools/list call carrying the session id. Use
+        // tools/list (no extra consent gate) to keep the test focused
+        // on the session resolution path.
+        val toolsList = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("id", 7)
+            .put("method", "tools/list")
+            .toString()
+        val outcome = server.handleJsonRpc(toolsList, requestSessionId = sid)
+        assertEquals(200, outcome.httpStatus)
+        val obj = JSONObject(outcome.body)
+        assertNull(
+            "tools/list with a valid session id should succeed, got error: ${obj.optJSONObject("error")}",
+            obj.optJSONObject("error"),
+        )
+    }
+
+    @Test
+    fun `unknown session id returns 404 to trigger client re-initialize`() {
+        val (server, _) = newServer()
+        // Don't initialize first — the session map starts empty, so
+        // any presented id is unknown.
+        val toolsList = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("id", 11)
+            .put("method", "tools/list")
+            .toString()
+        val outcome = server.handleJsonRpc(
+            toolsList,
+            requestSessionId = "stale-id-from-a-previous-server-instance",
+        )
+        assertEquals(
+            "unknown session id must produce HTTP 404 so the client re-initialises",
+            404,
+            outcome.httpStatus,
+        )
+        assertEquals("404 body should be empty per spec hint", "", outcome.body)
+        assertNull("no new session id minted on a 404", outcome.responseSessionId)
+    }
+
+    @Test
+    fun `request without session id falls back to legacy clientHint path`() {
+        val (server, _) = newServer()
+        // Drive the legacy path: client never sends Mcp-Session-Id.
+        // `initialize` still sets lastClientHint; tools/list without
+        // a session id resolves via that fallback.
+        server.handleJsonRpc(initBody(), requestSessionId = null)
+        val toolsList = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("id", 13)
+            .put("method", "tools/list")
+            .toString()
+        val outcome = server.handleJsonRpc(toolsList, requestSessionId = null)
+        assertEquals(200, outcome.httpStatus)
+        val obj = JSONObject(outcome.body)
+        assertNull(
+            "legacy fallback path should still succeed, got error: ${obj.optJSONObject("error")}",
+            obj.optJSONObject("error"),
+        )
+    }
 }
