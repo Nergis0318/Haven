@@ -106,6 +106,7 @@ class McpServer @Inject constructor(
     private val syncProfileRepository: sh.haven.core.data.repository.SyncProfileRepository,
     private val terminalInputQueue: TerminalInputQueue,
     private val prootInstallLogRepository: sh.haven.core.data.repository.ProotInstallLogRepository,
+    private val sshKeyRepository: sh.haven.core.data.repository.SshKeyRepository,
 ) : Closeable {
 
     /**
@@ -202,6 +203,7 @@ class McpServer @Inject constructor(
         syncProfileRepository = syncProfileRepository,
         terminalInputQueue = terminalInputQueue,
         prootInstallLogRepository = prootInstallLogRepository,
+        sshKeyRepository = sshKeyRepository,
     )
 
     /**

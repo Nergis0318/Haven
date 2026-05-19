@@ -77,6 +77,7 @@ internal class McpTools(
     private val syncProfileRepository: sh.haven.core.data.repository.SyncProfileRepository,
     private val terminalInputQueue: TerminalInputQueue,
     private val prootInstallLogRepository: sh.haven.core.data.repository.ProotInstallLogRepository,
+    private val sshKeyRepository: sh.haven.core.data.repository.SshKeyRepository,
 ) {
 
     /**
@@ -1202,6 +1203,58 @@ internal class McpTools(
                 "Open workspace \"$name\"?"
             },
         ) { args -> composeWorkspace(args) },
+
+        "list_ssh_keys" to ToolHandler(
+            description = "List saved SSH keys available for SSH / Mosh / SFTP profiles. Returns id, label, keyType (e.g. ed25519, rsa), publicKeyOpenSsh, fingerprintSha256, isEncrypted (passphrase-protected), biometricProtected, and createdAt. Private key bytes are NEVER returned — they stay encrypted at rest.",
+            inputSchema = emptyObjectSchema(),
+        ) { _ -> listSshKeys() },
+
+        "import_ssh_key" to ToolHandler(
+            description = "Import an OpenSSH / PEM / PKCS#8 / PuTTY PPK private key into the Haven key store. Pass `privateKey` (the text body, e.g. starting with `-----BEGIN OPENSSH PRIVATE KEY-----`), `label` (user-facing name), and optional `passphrase` (only if the key is encrypted). Returns the new key id, keyType, publicKeyOpenSsh (suitable for an `authorized_keys` line), and fingerprintSha256.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("privateKey", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Private key body in OpenSSH / PEM / PKCS#8 / PuTTY format. Pass the file's text contents verbatim, including BEGIN/END lines.")
+                    })
+                    put("label", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "User-facing label shown on the Keys screen and in profile pickers.")
+                    })
+                    put("passphrase", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Optional. Only required if the private key is encrypted at rest. Stored only briefly to decrypt the key for parsing; the saved entity keeps the original (still-encrypted) bytes.")
+                    })
+                })
+                put("required", JSONArray().put("privateKey").put("label"))
+            },
+            consentLevel = ConsentLevel.EVERY_CALL,
+            summarise = { args ->
+                val label = args.optString("label", "(unnamed)")
+                "Import SSH key \"$label\" into the Haven key store?"
+            },
+        ) { args -> importSshKey(args) },
+
+        "delete_ssh_key" to ToolHandler(
+            description = "Delete a saved SSH key by id. Profiles that referenced it via sshKeyId will fall through to password auth (or fail) on next connect — no cascade rewrite. Irreversible: the encrypted private key bytes are removed.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("sshKeyId", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "SSH key id from list_ssh_keys.")
+                    })
+                })
+                put("required", JSONArray().put("sshKeyId"))
+            },
+            consentLevel = ConsentLevel.EVERY_CALL,
+            summarise = { args ->
+                val id = args.optString("sshKeyId")
+                val label = runBlocking { sshKeyRepository.getById(id)?.label } ?: id.take(8) + "…"
+                "Delete SSH key \"$label\"? Cannot be undone."
+            },
+        ) { args -> deleteSshKey(args) },
 
         "list_tunnels" to ToolHandler(
             description = "List saved WireGuard / Tailscale tunnel configs available for Route-through on connection profiles. Returns id, label, type (WIREGUARD or TAILSCALE), and createdAt for each. The encrypted configText (wg-quick payload or Tailscale authkey blob) is NOT returned.",
@@ -3609,6 +3662,87 @@ internal class McpTools(
         return JSONObject().apply {
             put("count", tunnels.size)
             put("tunnels", arr)
+        }
+    }
+
+    private suspend fun listSshKeys(): JSONObject {
+        val keys = sshKeyRepository.getAll()
+        val arr = JSONArray()
+        for (k in keys) {
+            arr.put(JSONObject().apply {
+                put("id", k.id)
+                put("label", k.label)
+                put("keyType", k.keyType)
+                put("publicKeyOpenSsh", k.publicKeyOpenSsh)
+                put("fingerprintSha256", k.fingerprintSha256)
+                put("isEncrypted", k.isEncrypted)
+                put("biometricProtected", k.biometricProtected)
+                put("hasCertificate", k.certificateBytes != null)
+                put("caConfigId", k.caConfigId ?: JSONObject.NULL)
+                put("certIssuedAt", k.certIssuedAt ?: JSONObject.NULL)
+                put("createdAt", k.createdAt)
+            })
+        }
+        return JSONObject().apply {
+            put("count", keys.size)
+            put("keys", arr)
+        }
+    }
+
+    private suspend fun importSshKey(args: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+        val privateKey = args.optString("privateKey").ifBlank {
+            throw IllegalArgumentException("privateKey required")
+        }
+        val label = args.optString("label").ifBlank {
+            throw IllegalArgumentException("label required")
+        }
+        val passphrase = args.optString("passphrase").takeIf { it.isNotEmpty() }
+
+        val fileBytes = privateKey.toByteArray(Charsets.UTF_8)
+        val imported = try {
+            sh.haven.core.ssh.SshKeyImporter.import(fileBytes, passphrase)
+        } catch (e: sh.haven.core.ssh.SshKeyImporter.EncryptedKeyException) {
+            throw IllegalArgumentException(
+                "Key is passphrase-encrypted — pass `passphrase` to import.",
+            )
+        } catch (e: sh.haven.core.ssh.SshKeyImporter.SkKeyDetectedException) {
+            throw IllegalArgumentException(
+                "FIDO2 SK keys must be imported via the Keys → Discover from security key " +
+                    "flow on-device — they aren't pasteable text.",
+            )
+        }
+
+        val entity = sh.haven.core.data.db.entities.SshKey(
+            label = label,
+            keyType = imported.keyType,
+            privateKeyBytes = imported.privateKeyBytes,
+            publicKeyOpenSsh = imported.publicKeyOpenSsh,
+            fingerprintSha256 = imported.fingerprintSha256,
+            isEncrypted = imported.isEncrypted,
+        )
+        sshKeyRepository.save(entity)
+
+        JSONObject().apply {
+            put("id", entity.id)
+            put("label", entity.label)
+            put("keyType", entity.keyType)
+            put("publicKeyOpenSsh", entity.publicKeyOpenSsh)
+            put("fingerprintSha256", entity.fingerprintSha256)
+            put("isEncrypted", entity.isEncrypted)
+        }
+    }
+
+    private suspend fun deleteSshKey(args: JSONObject): JSONObject {
+        val id = args.optString("sshKeyId").ifBlank {
+            throw IllegalArgumentException("sshKeyId required")
+        }
+        val existing = sshKeyRepository.getById(id)
+            ?: throw IllegalArgumentException("No SSH key with id $id")
+        sshKeyRepository.delete(id)
+        return JSONObject().apply {
+            put("deleted", true)
+            put("id", id)
+            put("label", existing.label)
         }
     }
 

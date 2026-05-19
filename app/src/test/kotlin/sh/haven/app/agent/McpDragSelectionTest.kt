@@ -120,6 +120,10 @@ class McpDragSelectionTest {
             portKnocker = mockk<sh.haven.core.knock.PortKnocker>(relaxed = true),
             connectionLogRepository = mockk<sh.haven.core.data.repository.ConnectionLogRepository>(relaxed = true),
             servedFileTracker = sh.haven.core.data.agent.ServedFileTracker(),
+            syncProfileRepository = mockk<sh.haven.core.data.repository.SyncProfileRepository>(relaxed = true),
+            terminalInputQueue = mockk<TerminalInputQueue>(relaxed = true),
+            prootInstallLogRepository = mockk<sh.haven.core.data.repository.ProotInstallLogRepository>(relaxed = true),
+            sshKeyRepository = mockk<sh.haven.core.data.repository.SshKeyRepository>(relaxed = true),
         )
     }
 
