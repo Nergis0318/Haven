@@ -664,12 +664,18 @@ object DesktopCatalog {
                 bind = ${'$'}mod, Q, killactive
                 bind = ${'$'}mod SHIFT, E, exit
 
-                # Auto-launch the fuzzel app picker so a fresh VNC
-                # connection lands on something to interact with —
-                # wayvnc-only sessions are otherwise blank.
-                exec-once = sleep 1 && fuzzel
+                # Auto-launch a terminal so a fresh VNC connection lands on
+                # something usable. Was fuzzel, but fuzzel segfaults on the
+                # headless path when the guest uid has no passwd entry
+                # (#162); foot is robust. fuzzel stays on ${'$'}mod+D.
+                exec-once = sleep 1 && foot
             """.trimIndent(),
         ),
+        // Migrate existing installs off the crashing fuzzel autostart at
+        // launch (see ProotManager.migrateDesktopConfigs). Untested on
+        // device — Hyprland isn't packaged on Debian; mirrors the
+        // verified Sway fix.
+        legacyConfigMarkers = listOf("exec-once = sleep 1 && fuzzel"),
     )
 
     val NIRI = DesktopEnvironmentSpec(
@@ -716,11 +722,18 @@ object DesktopCatalog {
                     Mod+Shift+E { quit; }
                 }
 
-                // Auto-launch the fuzzel app picker so a fresh VNC
-                // connection lands on something to interact with.
-                spawn-at-startup "fuzzel"
+                // Auto-launch a terminal so a fresh VNC connection lands on
+                // something usable. Was fuzzel, which segfaults on the
+                // headless path when the guest uid has no passwd entry
+                // (#162); foot is robust. fuzzel stays on Mod+D.
+                spawn-at-startup "foot"
             """.trimIndent(),
         ),
+        // Migrate existing installs off the crashing fuzzel autostart at
+        // launch (see ProotManager.migrateDesktopConfigs). Untested on
+        // device — niri isn't packaged on Debian; mirrors the verified
+        // Sway fix.
+        legacyConfigMarkers = listOf("spawn-at-startup \"fuzzel\""),
     )
 
     val all: List<DesktopEnvironmentSpec> = listOf(

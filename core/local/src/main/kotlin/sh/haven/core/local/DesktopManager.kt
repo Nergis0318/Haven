@@ -492,6 +492,16 @@ class DesktopManager @Inject constructor(
         // the foreground; only the compositor itself is backgrounded.
         val shellCmd = buildString {
             append("set -e ; ")
+            // The compositor proot runs as uid 1000 (`-i 1000:1000`, so
+            // Sway/Hyprland's anti-root check passes), but no distro rootfs
+            // ships a uid-1000 user. getpwuid(1000) then returns NULL,
+            // which foot survives ("falling back to 'sh'") but fuzzel
+            // dereferenced and segfaulted (#162 grey screen). Ensure a
+            // uid-1000 passwd/group entry exists — idempotent (grep-guarded)
+            // so it appends once and works for existing installs too. The
+            // real Android app uid owns the rootfs, so the guest can write.
+            append("grep -q '^haven:' /etc/passwd 2>/dev/null || echo 'haven:x:1000:1000:Haven:/root:/bin/bash' >> /etc/passwd ; ")
+            append("grep -q '^haven:' /etc/group 2>/dev/null || echo 'haven:x:1000:' >> /etc/group ; ")
             append("mkdir -p $xdgInProot ; chmod 700 $xdgInProot ; ")
             append("export XDG_RUNTIME_DIR=$xdgInProot ; ")
             append("export HOME=/root ; ")
