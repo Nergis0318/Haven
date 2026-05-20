@@ -146,6 +146,16 @@ fun DesktopScreen(
     var userManageOverride by remember { mutableStateOf<Boolean?>(null) }
     val showManage = userManageOverride ?: tabs.isEmpty()
 
+    // When the Sessions/monitor view is shown, connect a viewer to any
+    // running desktop that doesn't have one — e.g. a desktop started via
+    // the MCP start_desktop tool (backend-only, no UI viewer). Without
+    // this, the monitor view sits empty even though the compositor +
+    // wayvnc are up. addVncSession dedupes, so an already-open viewer is
+    // untouched.
+    LaunchedEffect(showManage) {
+        if (!showManage) desktopViewModel.connectRunningDesktopViewers()
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Compact action row at the very top — surfaces the Manage
         // toggle without consuming the full TopAppBar height. Stays

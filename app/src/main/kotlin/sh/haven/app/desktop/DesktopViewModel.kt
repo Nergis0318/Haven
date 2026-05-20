@@ -350,6 +350,40 @@ class DesktopViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Open an in-app VNC viewer for any running desktop that doesn't have
+     * one yet. A desktop started outside the UI start path — notably via
+     * the MCP `start_desktop` tool, which brings up the compositor +
+     * wayvnc but can't open a viewer — leaves the Sessions view empty.
+     * Called when the Sessions/monitor view is shown so the
+     * recently-started session actually connects. addVncSession dedupes
+     * by host:port, so this is safe to call repeatedly and won't disturb
+     * an already-open viewer. Native (labwc) desktops use the Wayland tab
+     * path instead and are skipped here.
+     */
+    fun connectRunningDesktopViewers() {
+        viewModelScope.launch {
+            val pwd = prootManager.storedVncPassword
+                ?: connectionRepository.getAll()
+                    .firstOrNull { it.isVnc && it.host == "localhost" }
+                    ?.vncPassword
+            desktopManager.desktops.value.forEach { (de, inst) ->
+                if (inst.state == DesktopManager.DesktopState.RUNNING && !de.isNative) {
+                    addVncSession(
+                        host = "localhost",
+                        port = inst.vncPort,
+                        password = pwd,
+                        username = null,
+                        sshForward = false,
+                        sshSessionId = null,
+                        profileId = null,
+                        colorDepth = "BPP_24_TRUE",
+                    )
+                }
+            }
+        }
+    }
+
     fun resetDesktopSetupState() {
         prootManager.resetDesktopState()
     }
