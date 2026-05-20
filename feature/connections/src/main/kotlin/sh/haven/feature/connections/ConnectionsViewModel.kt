@@ -375,6 +375,20 @@ class ConnectionsViewModel @Inject constructor(
     private val _passwordFallback = MutableStateFlow<ConnectionProfile?>(null)
     val passwordFallback: StateFlow<ConnectionProfile?> = _passwordFallback.asStateFlow()
 
+    /**
+     * VNC/RDP/SMB-over-SSH-tunnel paths used to fail silently when the
+     * jump host had no saved password — they auto-connected with empty
+     * credentials and the resulting "Auth cancel for methods…" error
+     * went unsurfaced (#121a, KoriKraut). We now detect "no saved auth"
+     * up front, surface a password prompt, and (after submit) replay
+     * the dependent connect against the now-authed jump host. This
+     * holds the dependent's profile so the password dialog's onConnect
+     * handler knows to dispatch back here instead of running the
+     * generic SSH-login path.
+     */
+    private val _pendingTunnelDependent = MutableStateFlow<ConnectionProfile?>(null)
+    val pendingTunnelDependent: StateFlow<ConnectionProfile?> = _pendingTunnelDependent.asStateFlow()
+
     sealed class HostKeyPrompt {
         data class NewHost(
             val entry: KnownHostEntry,
@@ -1079,6 +1093,63 @@ class ConnectionsViewModel @Inject constructor(
 
     fun dismissPasswordFallback() {
         _passwordFallback.value = null
+        // If the dialog was opened for a tunnel-mode dependent (#121a),
+        // dismissing means "skip this connect" — clear the pending
+        // dependent so the next password dialog (e.g. an explicit SSH
+        // login) doesn't accidentally trigger a tunnel retry.
+        _pendingTunnelDependent.value = null
+    }
+
+    /**
+     * Returns the jump host profile if it needs a password prompt before
+     * the tunnel auto-connect can proceed (#121a). "Needs a prompt" means
+     * the profile has no saved password, no assigned key, and no
+     * unencrypted SSH keys in the keystore that JSch could try as a
+     * fallback. Returns null when at least one credential path is
+     * available — the existing silent auto-connect handles those.
+     */
+    private suspend fun jumpHostNeedsPasswordPrompt(
+        jumpProfileId: String,
+    ): ConnectionProfile? {
+        val jp = repository.getById(jumpProfileId) ?: return null
+        if (!jp.sshPassword.isNullOrBlank()) return null
+        if (jp.keyId != null) return null
+        val unencryptedKeys = sshKeyRepository.getAllDecrypted()
+            .filter { !it.isEncrypted }
+        if (unencryptedKeys.isNotEmpty()) return null
+        return jp
+    }
+
+    /**
+     * After the password dialog resolves for a tunnel-mode prompt, save
+     * the password (if requested) and replay the dependent connect.
+     * Calling [connectJumpHost] with the entered password establishes
+     * the SSH session up front; the subsequent dependent connect then
+     * finds and reuses that session via the existing-session lookup at
+     * [connectJumpHost]'s `firstOrNull { CONNECTED }` branch.
+     */
+    fun connectTunnelDependentAfterAuth(
+        jumpProfile: ConnectionProfile,
+        dependentProfile: ConnectionProfile,
+        password: String,
+        rememberPassword: Boolean?,
+    ) {
+        viewModelScope.launch {
+            try {
+                if (rememberPassword == true && password.isNotBlank()) {
+                    repository.save(jumpProfile.copy(sshPassword = password))
+                }
+                connectJumpHost(
+                    jumpProfile.id,
+                    password,
+                    tunnelOwnerProfileId = dependentProfile.id,
+                )
+                connect(dependentProfile, password = "")
+            } catch (e: Exception) {
+                Log.e(TAG, "Tunnel-auth retry failed: ${e.message}", e)
+                _error.value = "SSH tunnel: ${e.message}"
+            }
+        }
     }
 
     fun connect(
@@ -1142,6 +1213,15 @@ class ConnectionsViewModel @Inject constructor(
             repository.markConnected(profile.id)
             val sshProfileId = profile.vncSshProfileId
             if (profile.vncSshForward && sshProfileId != null) {
+                // If the jump host has no saved credential and no key
+                // JSch could try, prompt for a password up front instead
+                // of silently failing the auto-connect (#121a).
+                val needsPrompt = jumpHostNeedsPasswordPrompt(sshProfileId)
+                if (needsPrompt != null) {
+                    _pendingTunnelDependent.value = profile
+                    _passwordFallback.value = needsPrompt
+                    return@launch
+                }
                 // Auto-connect SSH tunnel host (reuses existing session if
                 // available), mirroring the RDP path. The VNC screen itself
                 // uses this sshSessionId to open the local forward.
@@ -1193,6 +1273,12 @@ class ConnectionsViewModel @Inject constructor(
             repository.markConnected(profile.id)
             val sshProfileId = profile.rdpSshProfileId
             if (profile.rdpSshForward && sshProfileId != null) {
+                val needsPrompt = jumpHostNeedsPasswordPrompt(sshProfileId)
+                if (needsPrompt != null) {
+                    _pendingTunnelDependent.value = profile
+                    _passwordFallback.value = needsPrompt
+                    return@launch
+                }
                 // Auto-connect SSH tunnel host (reuses existing session if available)
                 try {
                     _connectingProfileId.value = profile.id
@@ -1241,6 +1327,13 @@ class ConnectionsViewModel @Inject constructor(
                 val sshProfileId = profile.smbSshProfileId
 
                 if (profile.smbSshForward && sshProfileId != null) {
+                    val needsPrompt = jumpHostNeedsPasswordPrompt(sshProfileId)
+                    if (needsPrompt != null) {
+                        _pendingTunnelDependent.value = profile
+                        _passwordFallback.value = needsPrompt
+                        _connectingProfileId.value = null
+                        return@launch
+                    }
                     val (sshSessionId, _) = connectJumpHost(
                         sshProfileId, "", tunnelOwnerProfileId = profile.id,
                     )

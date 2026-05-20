@@ -212,6 +212,7 @@ fun ConnectionsScreen(
     val deploySuccess by viewModel.deploySuccess.collectAsState()
     val sessionSelection by viewModel.sessionSelection.collectAsState()
     val passwordFallback by viewModel.passwordFallback.collectAsState()
+    val pendingTunnelDependent by viewModel.pendingTunnelDependent.collectAsState()
     val hostKeyPrompt by viewModel.hostKeyPrompt.collectAsState()
     val fidoTouchPrompt by viewModel.fidoTouchPrompt.collectAsState()
     val keyboardInteractiveAuth by viewModel.keyboardInteractiveAuth.collectAsState()
@@ -637,12 +638,26 @@ fun ConnectionsScreen(
             assignedKeyLabel = assignedKey?.label,
             onDismiss = { viewModel.dismissPasswordFallback() },
             onConnect = { username, password, rememberPassword ->
-                viewModel.connect(
-                    profile,
-                    password,
-                    rememberPassword = rememberPassword,
-                    usernameOverride = username,
-                )
+                // Tunnel-mode (#121a): if the prompt was opened because
+                // the jump host of a VNC/RDP/SMB dependent needs a
+                // password, route to the tunnel-replay path. Otherwise
+                // run the normal SSH login flow.
+                val pending = pendingTunnelDependent
+                if (pending != null) {
+                    viewModel.connectTunnelDependentAfterAuth(
+                        jumpProfile = profile,
+                        dependentProfile = pending,
+                        password = password,
+                        rememberPassword = rememberPassword,
+                    )
+                } else {
+                    viewModel.connect(
+                        profile,
+                        password,
+                        rememberPassword = rememberPassword,
+                        usernameOverride = username,
+                    )
+                }
                 viewModel.dismissPasswordFallback()
             },
         )
