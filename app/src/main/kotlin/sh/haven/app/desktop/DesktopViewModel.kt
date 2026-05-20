@@ -284,7 +284,13 @@ class DesktopViewModel @Inject constructor(
                 DesktopStartOutcome.Timeout
             }
             when (outcome) {
-                is DesktopStartOutcome.Ready -> { /* fall through to addVncSession */ }
+                is DesktopStartOutcome.Ready -> {
+                    // Confirm to the manager that the desktop is up so
+                    // the row's status dot flips from amber STARTING to
+                    // green RUNNING. The manager keeps STARTING until
+                    // we signal — see DesktopManager.markRunning.
+                    desktopManager.markRunning(de)
+                }
                 is DesktopStartOutcome.Error -> {
                     Log.e(TAG, "startDesktop: ${de.label} failed — ${outcome.message}")
                     val activeDistro = prootManager.activeDistroId

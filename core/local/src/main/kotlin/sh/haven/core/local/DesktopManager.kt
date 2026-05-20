@@ -44,6 +44,14 @@ class DesktopManager @Inject constructor(
     // Internal process tracking (not exposed in DesktopInstance)
     private val processes = mutableMapOf<ProotManager.DesktopEnvironment, Process>()
 
+    // Rolling tail of stdout/stderr per DE (most recent 20 lines), so that
+    // a script-exit-during-startup can be reported with context rather
+    // than just "didn't come up". Used by the exit thread when state is
+    // still STARTING at process exit (#162 bug B, Arch silent fail —
+    // there is no early signal otherwise).
+    private val logTails = mutableMapOf<ProotManager.DesktopEnvironment, ArrayDeque<String>>()
+    private val logTailLimit = 20
+
     // Display number allocation for X11 desktops
     private val usedDisplays = mutableSetOf<Int>()
 
@@ -169,6 +177,7 @@ class DesktopManager @Inject constructor(
             port = 5900 + display
         }
         _desktops.update { it + (de to DesktopInstance(de, display, port, DesktopState.STARTING)) }
+        synchronized(logTails) { logTails[de] = ArrayDeque() }
 
         try {
             val process = when (de.spec.launch) {
@@ -178,32 +187,83 @@ class DesktopManager @Inject constructor(
                     error("NativeCompositor handled above; unreachable")
             }
             processes[de] = process
-            _desktops.update { it + (de to DesktopInstance(de, display, port, DesktopState.RUNNING)) }
+            // Stays at STARTING — flips to RUNNING via `markRunning(de)`
+            // once the caller (DesktopViewModel.startDesktop) confirms the
+            // VNC port is listening. If the proot script exits before
+            // that signal arrives, the exit thread transitions to ERROR
+            // with the log tail attached, so the UI gets a real diagnosis
+            // instead of an 8-second silent timeout (#162 bug B).
 
-            // Log output on a background thread
+            // Log output on a background thread, also tee'd into the
+            // rolling tail buffer so the exit handler can attach context.
             Thread({
                 try {
                     process.inputStream.bufferedReader().forEachLine { line ->
                         Log.d(TAG, "${de.label}[:$display]: $line")
+                        synchronized(logTails) {
+                            val tail = logTails[de] ?: return@synchronized
+                            tail.addLast(line)
+                            while (tail.size > logTailLimit) tail.removeFirst()
+                        }
                     }
                 } catch (_: Exception) {}
-                Log.d(TAG, "${de.label}[:$display] exited: ${process.waitFor()}")
+                val exitCode = process.waitFor()
+                Log.d(TAG, "${de.label}[:$display] exited: $exitCode")
                 _desktops.update { current ->
                     val instance = current[de] ?: return@update current
-                    if (instance.state == DesktopState.RUNNING) {
-                        releaseDisplay(display)
-                        processes.remove(de)
-                        current - de
-                    } else current
+                    when (instance.state) {
+                        DesktopState.RUNNING -> {
+                            releaseDisplay(display)
+                            processes.remove(de)
+                            synchronized(logTails) { logTails.remove(de) }
+                            current - de
+                        }
+                        DesktopState.STARTING -> {
+                            releaseDisplay(display)
+                            processes.remove(de)
+                            val tail = synchronized(logTails) {
+                                logTails.remove(de)?.toList().orEmpty()
+                            }
+                            val message = buildString {
+                                append("${de.label} exited during startup (code $exitCode)")
+                                if (tail.isNotEmpty()) {
+                                    append(":\n")
+                                    append(tail.takeLast(8).joinToString("\n"))
+                                }
+                            }
+                            current + (de to DesktopInstance(
+                                de, display, port, DesktopState.ERROR, errorMessage = message,
+                            ))
+                        }
+                        else -> current
+                    }
                 }
             }, "desktop-${de.name}-log").apply { isDaemon = true }.start()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start ${de.label}", e)
             releaseDisplay(display)
+            synchronized(logTails) { logTails.remove(de) }
             _desktops.update { it + (de to DesktopInstance(
                 de, display, port, DesktopState.ERROR,
                 errorMessage = e.message,
             )) }
+        }
+    }
+
+    /**
+     * Caller (DesktopViewModel) signals that the desktop has reached a
+     * usable state — VNC port listening for X11Vnc/NestedWayland, or
+     * the native compositor reporting alive. Flips state from STARTING
+     * to RUNNING. No-op if the entry is no longer STARTING (e.g. the
+     * exit thread already transitioned it to ERROR because the script
+     * crashed in the same window).
+     */
+    fun markRunning(de: ProotManager.DesktopEnvironment) {
+        _desktops.update { current ->
+            val instance = current[de] ?: return@update current
+            if (instance.state == DesktopState.STARTING) {
+                current + (de to instance.copy(state = DesktopState.RUNNING))
+            } else current
         }
     }
 
@@ -248,10 +308,16 @@ class DesktopManager @Inject constructor(
     }
 
     /**
-     * Get the VNC port for a running desktop, or null if not running.
+     * Get the VNC port allocated for a desktop. Returns the port for
+     * both STARTING and RUNNING entries — callers polling the socket
+     * to confirm readiness (DesktopViewModel.startDesktop) need to know
+     * the target port before the state has flipped to RUNNING. Returns
+     * null for STOPPED / ERROR / missing entries.
      */
     fun getVncPort(de: ProotManager.DesktopEnvironment): Int? =
-        _desktops.value[de]?.takeIf { it.state == DesktopState.RUNNING }?.vncPort
+        _desktops.value[de]?.takeIf {
+            it.state == DesktopState.RUNNING || it.state == DesktopState.STARTING
+        }?.vncPort
 
     // ---- X11/VNC desktop launch (software rendering, no virgl) ----
 
