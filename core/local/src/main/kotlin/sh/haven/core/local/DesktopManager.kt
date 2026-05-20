@@ -268,6 +268,32 @@ class DesktopManager @Inject constructor(
     }
 
     /**
+     * Runtime log of a nested-Wayland desktop's compositor — the contents
+     * of the compositor.log that [launchNestedWayland] redirects the
+     * sway/Hyprland/niri process's stdout+stderr into
+     * (`$XDG_RUNTIME_DIR/compositor.log`, where XDG_RUNTIME_DIR is
+     * `/tmp/xdg-runtime-<display>` and /tmp is bound to the app cacheDir).
+     * Returns null for non-nested-Wayland DEs, or when the instance/log
+     * isn't present. Exposed for the read_desktop_log MCP endpoint so
+     * grey-screen / no-frames diagnosis doesn't need a proot shell.
+     */
+    fun compositorLogFor(de: ProotManager.DesktopEnvironment): String? {
+        if (de.spec.launch !is LaunchSpec.NestedWayland) return null
+        val display = _desktops.value[de]?.displayNumber ?: return null
+        val logFile = File(context.cacheDir, "xdg-runtime-$display/compositor.log")
+        return if (logFile.exists()) logFile.readText() else null
+    }
+
+    /**
+     * Rolling tail (last [logTailLimit] lines) of the launch process's
+     * own stdout/stderr — the `[haven]` progress markers, wayvnc output,
+     * and any pre-compositor errors. Captured live in [startDesktop]'s
+     * reader thread; cleared when the process exits cleanly.
+     */
+    fun capturedOutputFor(de: ProotManager.DesktopEnvironment): List<String> =
+        synchronized(logTails) { logTails[de]?.toList().orEmpty() }
+
+    /**
      * Stop a running desktop environment.
      */
     fun stopDesktop(de: ProotManager.DesktopEnvironment) {

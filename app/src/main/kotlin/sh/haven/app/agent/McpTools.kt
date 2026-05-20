@@ -1160,6 +1160,24 @@ internal class McpTools(
             },
         ) { args -> stopDesktopTool(args) },
 
+        "read_desktop_log" to ToolHandler(
+            description = "Read a running (or just-failed) desktop's RUNTIME logs — distinct from inspect_proot, which only covers install state. For nested-Wayland DEs (Sway / Hyprland / niri) returns the compositor's own stdout/stderr (compositor.log: the wlr/[ERROR] lines, output-enable, buffer-allocation failures) plus Haven's captured launch-process output (the `[haven]` progress markers + wayvnc lines). This is the diagnostic for grey-screen / no-frames / compositor-refuses-to-start issues — the data that otherwise requires opening a proot shell. Pass deId to target one DE; omit for all running desktops.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("deId", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Desktop environment id (e.g. \"sway\"). Omit for all running desktops.")
+                    })
+                    put("maxChars", JSONObject().apply {
+                        put("type", "integer")
+                        put("description", "Cap compositor.log to its last N chars. Default 4000.")
+                    })
+                })
+            },
+            consentLevel = ConsentLevel.NEVER,
+        ) { args -> readDesktopLog(args) },
+
         "get_proot_install_log" to ToolHandler(
             description = "Return install-log events from the Room-backed ProotInstallLog table. Survives logcat rotation and app restarts. Filter by distroId and/or sinceMs (millis since epoch) to poll incrementally. Each event: id, timestamp, distroId, phase, deId?, exit?, ok, message?, logTail?.",
             inputSchema = JSONObject().apply {
@@ -4634,6 +4652,42 @@ internal class McpTools(
             put("deId", de.spec.id)
             put("label", de.label)
             put("status", "stopped")
+        }
+    }
+
+    private fun readDesktopLog(args: JSONObject): JSONObject {
+        val deId = args.optString("deId").takeIf { it.isNotEmpty() }
+        val maxChars = args.optInt("maxChars", 4000).coerceIn(200, 50000)
+        val dm = localSessionManager.desktopManager
+        val instances = dm.desktops.value
+        val targets = if (deId != null) {
+            val de = sh.haven.core.local.ProotManager.DesktopEnvironment.entries
+                .firstOrNull { it.spec.id == deId }
+                ?: throw McpError(-32602, "Unknown deId: $deId")
+            listOf(de)
+        } else {
+            instances.keys.toList()
+        }
+        val arr = JSONArray()
+        for (de in targets) {
+            val inst = instances[de]
+            val compLog = dm.compositorLogFor(de)
+                ?.let { if (it.length > maxChars) it.takeLast(maxChars) else it }
+            arr.put(JSONObject().apply {
+                put("deId", de.spec.id)
+                put("label", de.label)
+                put("state", inst?.state?.name ?: "STOPPED")
+                put("displayNumber", inst?.displayNumber ?: -1)
+                put("vncPort", inst?.vncPort ?: -1)
+                put("launchKind", de.spec.launch::class.simpleName ?: "unknown")
+                inst?.errorMessage?.let { put("errorMessage", it) }
+                put("capturedOutput", JSONArray(dm.capturedOutputFor(de)))
+                put("compositorLog", compLog ?: JSONObject.NULL)
+            })
+        }
+        return JSONObject().apply {
+            put("count", arr.length())
+            put("desktops", arr)
         }
     }
 
