@@ -403,6 +403,12 @@ private fun VncViewer(
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
     var shiftActive by remember { mutableStateOf(false) }
+    // Super/Logo (Mod4) — needed to drive nested-Wayland compositor
+    // keybinds (Sway/Hyprland/niri all use Super for $mod), which the
+    // in-app VNC viewer surfaces (#171). Not in the configurable layout
+    // (that's shared with the terminal, where Super is meaningless) —
+    // rendered as a fixed toggle on the VNC toolbar.
+    var superActive by remember { mutableStateOf(false) }
 
     // Fullscreen overlay toolbar
     var overlayVisible by remember { mutableStateOf(false) }
@@ -788,6 +794,7 @@ private fun VncViewer(
                 ctrlActive = ctrlActive,
                 altActive = altActive,
                 shiftActive = shiftActive,
+                superActive = superActive,
                 onToggleCtrl = {
                     ctrlActive = !ctrlActive
                     if (!ctrlActive) onKeyUp(XK_CONTROL_L) else onKeyDown(XK_CONTROL_L)
@@ -800,6 +807,10 @@ private fun VncViewer(
                     shiftActive = !shiftActive
                     if (!shiftActive) onKeyUp(XK_SHIFT_L) else onKeyDown(XK_SHIFT_L)
                 },
+                onToggleSuper = {
+                    superActive = !superActive
+                    if (!superActive) onKeyUp(XK_SUPER_L) else onKeyDown(XK_SUPER_L)
+                },
                 onVncKey = { keySym ->
                     onKeyDown(keySym)
                     onKeyUp(keySym)
@@ -807,6 +818,7 @@ private fun VncViewer(
                     if (ctrlActive) { onKeyUp(XK_CONTROL_L); ctrlActive = false }
                     if (altActive) { onKeyUp(XK_ALT_L); altActive = false }
                     if (shiftActive) { onKeyUp(XK_SHIFT_L); shiftActive = false }
+                    if (superActive) { onKeyUp(XK_SUPER_L); superActive = false }
                 },
                 onToggleKeyboard = {
                     keyboardVisible = !keyboardVisible
@@ -1174,9 +1186,11 @@ private fun VncKeyToolbar(
     ctrlActive: Boolean,
     altActive: Boolean,
     shiftActive: Boolean,
+    superActive: Boolean,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
     onToggleShift: () -> Unit,
+    onToggleSuper: () -> Unit,
     onVncKey: (keySym: Int) -> Unit,
     onToggleKeyboard: () -> Unit,
 ) {
@@ -1187,6 +1201,19 @@ private fun VncKeyToolbar(
         .toSet()
 
     Surface(tonalElevation = 2.dp) {
+      Column {
+        // Fixed Super (Mod4) toggle — drives nested-Wayland compositor
+        // keybinds (#171). Kept out of the configurable layout because
+        // that layout is shared with the terminal toolbar; here it sits
+        // above the user's configured rows so it's always reachable.
+        Row(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp, vertical = 1.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            VncToggleButton("Super", superActive, onToggleSuper)
+        }
         if (layout.rows.size >= 2 && presentNavKeys.isNotEmpty()) {
             val (row1Left, row1Right) = vncSplitAroundNav(layout.row1)
             val (row2Left, row2Right) = vncSplitAroundNav(layout.row2)
@@ -1272,6 +1299,7 @@ private fun VncKeyToolbar(
                 }
             }
         }
+      }
     }
 }
 
