@@ -1201,19 +1201,12 @@ private fun VncKeyToolbar(
         .toSet()
 
     Surface(tonalElevation = 2.dp) {
-      Column {
-        // Fixed Super (Mod4) toggle — drives nested-Wayland compositor
-        // keybinds (#171). Kept out of the configurable layout because
-        // that layout is shared with the terminal toolbar; here it sits
-        // above the user's configured rows so it's always reachable.
-        Row(
-            modifier = Modifier
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 4.dp, vertical = 1.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            VncToggleButton("Super", superActive, onToggleSuper)
-        }
+        // Super (Mod4) toggle for nested-Wayland compositor keybinds
+        // (#171) is rendered inline as the first key of row 1 — NOT a
+        // separate row, since the toolbar height budget can't afford a
+        // third row. Kept out of the configurable layout because that
+        // layout is shared with the terminal toolbar (where Super is
+        // meaningless).
         if (layout.rows.size >= 2 && presentNavKeys.isNotEmpty()) {
             val (row1Left, row1Right) = vncSplitAroundNav(layout.row1)
             val (row2Left, row2Right) = vncSplitAroundNav(layout.row2)
@@ -1226,6 +1219,7 @@ private fun VncKeyToolbar(
                 // Left keys column
                 Column(modifier = Modifier.width(IntrinsicSize.Max)) {
                     Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
+                        VncToggleButton("Super", superActive, onToggleSuper)
                         for (item in row1Left) {
                             VncRenderItem(item, ctrlActive, altActive, shiftActive, onToggleCtrl, onToggleAlt, onToggleShift, onVncKey, onToggleKeyboard)
                         }
@@ -1284,6 +1278,7 @@ private fun VncKeyToolbar(
         } else {
             // Fallback: flat rows
             Column {
+                var superPlaced = false
                 for (row in layout.rows) {
                     if (row.isEmpty()) continue
                     Row(
@@ -1292,6 +1287,12 @@ private fun VncKeyToolbar(
                             .padding(horizontal = 4.dp, vertical = 1.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // Super inline as the first key of the first row
+                        // (no extra row — see above).
+                        if (!superPlaced) {
+                            VncToggleButton("Super", superActive, onToggleSuper)
+                            superPlaced = true
+                        }
                         for (item in row) {
                             VncRenderItem(item, ctrlActive, altActive, shiftActive, onToggleCtrl, onToggleAlt, onToggleShift, onVncKey, onToggleKeyboard)
                         }
@@ -1299,7 +1300,6 @@ private fun VncKeyToolbar(
                 }
             }
         }
-      }
     }
 }
 
