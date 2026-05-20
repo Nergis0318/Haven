@@ -4626,8 +4626,33 @@ internal class McpTools(
         }
         val dm = localSessionManager.desktopManager
         dm.startDesktop(de)
-        // startDesktop is synchronous up to the process spawn; the
-        // post-spawn state may still be STARTING when we read it back.
+        // DesktopManager.startDesktop stays at STARTING until a caller
+        // confirms the VNC port is up and calls markRunning — the UI path
+        // (DesktopViewModel.startDesktop) does this, but the MCP path
+        // didn't, so MCP-started desktops sat at STARTING forever (task
+        // #23). Do the same port-poll → markRunning here so the state
+        // finalizes. Native (labwc) self-finalizes RUNNING via the JNI
+        // bridge, so skip the poll for it. We don't open an in-app VNC
+        // viewer (that's UI-only; McpTools has no DesktopViewModel) — the
+        // returned vncPort lets an external VNC client connect.
+        if (!de.isNative) {
+            val port = dm.getVncPort(de) ?: 5901
+            withContext(Dispatchers.IO) {
+                val deadline = System.currentTimeMillis() + 8000
+                while (System.currentTimeMillis() < deadline) {
+                    if (dm.desktops.value[de]?.state ==
+                        sh.haven.core.local.DesktopManager.DesktopState.ERROR
+                    ) break
+                    try {
+                        java.net.Socket("127.0.0.1", port).close()
+                        dm.markRunning(de)
+                        break
+                    } catch (_: Exception) {
+                        kotlinx.coroutines.delay(500)
+                    }
+                }
+            }
+        }
         val instance = dm.desktops.value[de]
         return JSONObject().apply {
             put("deId", de.spec.id)
