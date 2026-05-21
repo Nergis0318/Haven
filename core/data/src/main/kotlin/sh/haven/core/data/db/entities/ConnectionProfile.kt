@@ -1,5 +1,6 @@
 package sh.haven.core.data.db.entities
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import java.util.UUID
@@ -15,6 +16,16 @@ data class ConnectionProfile(
     val sshPassword: String? = null,
     val authType: AuthType = AuthType.PASSWORD,
     val keyId: String? = null,
+    /**
+     * Ordered list of auth methods to attempt in a single connect, encoded
+     * one-per-token (newline-separated): `PASSWORD`, `KEY:<keyId>`, or
+     * `KEYBOARD_INTERACTIVE`. Empty string = "derive from the legacy
+     * [authType]/[keyId] fields" (pre-#166 profiles, before the 55→56
+     * migration backfills them). Lets a profile satisfy multi-factor SSH
+     * chains like `publickey,password` (#166). Parse via [authMethodSpecs].
+     */
+    @ColumnInfo(defaultValue = "")
+    val authMethods: String = "",
     val colorTag: Int = 0,
     val lastConnected: Long? = null,
     val sortOrder: Int = 0,
@@ -193,6 +204,67 @@ data class ConnectionProfile(
     enum class AuthType {
         PASSWORD,
         KEY,
+    }
+
+    /**
+     * Parsed [authMethods], in attempt order. Falls back to a one-element
+     * list derived from the legacy [authType]/[keyId] when [authMethods] is
+     * blank (pre-#166 rows the migration hasn't touched, or in-memory
+     * profiles built without setting it).
+     */
+    val authMethodSpecs: List<AuthMethodSpec>
+        get() = AuthMethodSpec.parseList(authMethods).ifEmpty {
+            listOf(
+                when (authType) {
+                    AuthType.KEY -> AuthMethodSpec.Key(keyId)
+                    AuthType.PASSWORD -> AuthMethodSpec.Password
+                },
+            )
+        }
+
+    /**
+     * One auth method in a connect attempt. Serialised one-per-line via
+     * [serialize]; the ordered list satisfies multi-factor SSH chains
+     * (e.g. `publickey,password`) in a single connect. (#166)
+     */
+    sealed interface AuthMethodSpec {
+        fun serialize(): String
+
+        /** Static password (stored in [ConnectionProfile.sshPassword]). */
+        data object Password : AuthMethodSpec {
+            override fun serialize() = "PASSWORD"
+        }
+
+        /** Public-key auth using the saved key [keyId] (null = any usable key). */
+        data class Key(val keyId: String?) : AuthMethodSpec {
+            override fun serialize() = if (keyId.isNullOrEmpty()) "KEY" else "KEY:$keyId"
+        }
+
+        /** Interactive PAM prompts (OTP etc.) — answered live, never stored. */
+        data object KeyboardInteractive : AuthMethodSpec {
+            override fun serialize() = "KEYBOARD_INTERACTIVE"
+        }
+
+        companion object {
+            fun parseList(text: String?): List<AuthMethodSpec> =
+                text?.lineSequence()
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotEmpty() }
+                    ?.mapNotNull(::parse)
+                    ?.toList()
+                    .orEmpty()
+
+            fun serializeList(specs: List<AuthMethodSpec>): String =
+                specs.joinToString("\n") { it.serialize() }
+
+            private fun parse(token: String): AuthMethodSpec? = when {
+                token == "PASSWORD" -> Password
+                token == "KEYBOARD_INTERACTIVE" -> KeyboardInteractive
+                token == "KEY" -> Key(null)
+                token.startsWith("KEY:") -> Key(token.removePrefix("KEY:").ifEmpty { null })
+                else -> null
+            }
+        }
     }
 
     /** Typed view of [fileTransport]. Unknown values fall back to [FileTransport.AUTO]. */

@@ -1838,7 +1838,7 @@ class ConnectionsViewModel @Inject constructor(
                 }
 
                 val sshSessionMgr = withContext(Dispatchers.IO) {
-                    val authMethod = resolveAuthMethod(profile, password)
+                    val authMethod = resolveAuthMethods(profile, password)
                     isFidoAuth = authMethod is ConnectionConfig.AuthMethod.FidoKey
                     val config = ConnectionConfig(
                         host = profile.host,
@@ -2057,7 +2057,7 @@ class ConnectionsViewModel @Inject constructor(
             try {
                 // Phase 1: SSH bootstrap — connect, verify host key
                 val client = withContext(Dispatchers.IO) {
-                    val authMethod = resolveAuthMethod(profile, password)
+                    val authMethod = resolveAuthMethods(profile, password)
                     isFidoAuth = authMethod is ConnectionConfig.AuthMethod.FidoKey
                     val config = ConnectionConfig(
                         host = profile.host,
@@ -2191,7 +2191,7 @@ class ConnectionsViewModel @Inject constructor(
             try {
                 // Phase 1: SSH bootstrap — connect, resolve session manager, list sessions
                 val client = withContext(Dispatchers.IO) {
-                    val authMethod = resolveAuthMethod(profile, password)
+                    val authMethod = resolveAuthMethods(profile, password)
                     isFidoAuth = authMethod is ConnectionConfig.AuthMethod.FidoKey
                     val config = ConnectionConfig(
                         host = profile.host,
@@ -2788,12 +2788,14 @@ class ConnectionsViewModel @Inject constructor(
             }
         }
         val authDetail = sshSessionManager.getConnectionConfigForProfile(profileId)?.first?.let { config ->
-            when (config.authMethod) {
+            fun label(m: ConnectionConfig.AuthMethod): String = when (m) {
                 is ConnectionConfig.AuthMethod.Password -> "password"
                 is ConnectionConfig.AuthMethod.PrivateKey -> "key"
                 is ConnectionConfig.AuthMethod.PrivateKeys -> "key"
                 is ConnectionConfig.AuthMethod.FidoKey -> "FIDO2"
+                is ConnectionConfig.AuthMethod.Multi -> m.methods.joinToString("+") { label(it) }
             }
+            label(config.authMethod)
         }
         connectionLogRepository.logEvent(profileId, ConnectionLog.Status.CONNECTED, details = authDetail, verboseLog = verboseLog)
         startForegroundServiceIfNeeded()
@@ -3007,6 +3009,38 @@ class ConnectionsViewModel @Inject constructor(
      * Otherwise if keys exist and password is empty, try the first available key.
      * Falls back to password auth.
      */
+    /**
+     * Resolve the profile's ordered [ConnectionProfile.authMethodSpecs] into a
+     * connect-time auth method (#166). One method → that method (preserving the
+     * pre-#166 single-method behaviour exactly); several → a
+     * [ConnectionConfig.AuthMethod.Multi] so a `publickey,password`-style chain
+     * completes in one attempt. Keyboard-interactive specs carry no credential
+     * (the prompter handles them live), so they don't add to the list.
+     */
+    private suspend fun resolveAuthMethods(
+        profile: ConnectionProfile,
+        password: String,
+    ): ConnectionConfig.AuthMethod {
+        val specs = profile.authMethodSpecs
+        if (specs.size <= 1) return resolveAuthMethod(profile, password)
+
+        val methods = specs.mapNotNull { spec ->
+            when (spec) {
+                is ConnectionProfile.AuthMethodSpec.Password ->
+                    ConnectionConfig.AuthMethod.Password(password)
+                is ConnectionProfile.AuthMethodSpec.Key ->
+                    if (spec.keyId != null) resolveExplicitKey(spec.keyId!!, password)
+                    else resolveAnyUnencryptedKeys()
+                ConnectionProfile.AuthMethodSpec.KeyboardInteractive -> null
+            }
+        }
+        return when {
+            methods.isEmpty() -> ConnectionConfig.AuthMethod.Password(password)
+            methods.size == 1 -> methods.single()
+            else -> ConnectionConfig.AuthMethod.Multi(methods)
+        }
+    }
+
     private suspend fun resolveAuthMethod(
         profile: ConnectionProfile,
         password: String,
@@ -3014,65 +3048,68 @@ class ConnectionsViewModel @Inject constructor(
         // Profile has an explicit key assigned
         val keyId = profile.keyId
         if (keyId != null) {
-            // Fetch row metadata first (no biometric prompt yet) so the
-            // cert-renewal gate can run before we trigger the biometric
-            // prompt and the JSch connect. If the cert is fresh enough,
-            // ensureFresh returns the input unchanged (no UI). If it's
-            // expiring, it runs the OIDC + sign flow inline and the
-            // saved row is what subsequent fetches see. (#133 phase 2b)
-            val originalKey = sshKeyRepository.getById(keyId)
-            val key = if (originalKey != null) {
-                certRenewalGate.ensureFresh(originalKey)
-            } else null
-            val keyBytes = if (key != null) {
-                sshKeyRepository.getDecryptedKeyBytes(keyId)
-            } else null
-            if (keyBytes != null && key != null) {
-                // Cert is public material so the same fetch works for
-                // both software and FIDO2 paths; null = plain pubkey auth.
-                val certBytes = sshKeyRepository.getCertificateBytes(keyId)
-                // FIDO2 SK keys use hardware signing, not PEM key material
-                if (key.keyType.startsWith("sk-")) {
-                    Log.d(TAG, "Using FIDO2 SK key: ${key.keyType}" +
-                        if (certBytes != null) " (with certificate)" else "")
-                    return ConnectionConfig.AuthMethod.FidoKey(
-                        skKeyData = keyBytes,
-                        certBytes = certBytes,
-                    )
-                }
-                // For encrypted keys, pass the original encrypted bytes + passphrase.
-                // JSch decrypts at auth time — key never stored in plaintext.
-                val passphrase = if (key.isEncrypted) password.toCharArray() else CharArray(0)
-                return ConnectionConfig.AuthMethod.PrivateKey(
-                    keyBytes = if (key.isEncrypted) keyBytes else rawKeyToPem(keyBytes, key.keyType),
-                    passphrase = passphrase,
-                    certificateBytes = certBytes,
-                )
-            }
+            resolveExplicitKey(keyId, password)?.let { return it }
         }
 
         // No explicit key but keys are available — try every key the
-        // server might accept. Skip encrypted (passphrase-protected)
-        // keys: we don't have the passphrase here, so they require
-        // explicit assignment to a connection. Biometric-protected
-        // keys ARE included; each one will trigger its own
-        // BiometricPrompt as the gate is consulted, so a connection
-        // backed by a biometric-only keystore still has a working
-        // auth path. Users who want to avoid the per-key prompt
-        // sequence should assign one specific key to the profile.
+        // server might accept.
         if (password.isEmpty()) {
-            val keys = sshKeyRepository.getAllDecrypted()
-                .filter { !it.isEncrypted }
-            if (keys.isNotEmpty()) {
-                return ConnectionConfig.AuthMethod.PrivateKeys(
-                    keys = keys.map { key ->
-                        key.label to rawKeyToPem(key.privateKeyBytes, key.keyType)
-                    }
-                )
-            }
+            resolveAnyUnencryptedKeys()?.let { return it }
         }
 
         return ConnectionConfig.AuthMethod.Password(password)
+    }
+
+    /**
+     * Resolve a specific saved key into an auth method, running the
+     * cert-renewal gate and handling FIDO2 / encrypted keys. Returns null
+     * if the key is missing or its bytes can't be decrypted (denied
+     * biometric, etc.) — callers fall through. [password] is used as the
+     * passphrase for an encrypted key.
+     */
+    private suspend fun resolveExplicitKey(
+        keyId: String,
+        password: String,
+    ): ConnectionConfig.AuthMethod? {
+        // Fetch row metadata first (no biometric prompt yet) so the
+        // cert-renewal gate can run before we trigger the biometric prompt
+        // and the JSch connect. (#133 phase 2b)
+        val originalKey = sshKeyRepository.getById(keyId)
+        val key = if (originalKey != null) certRenewalGate.ensureFresh(originalKey) else null
+        val keyBytes = if (key != null) sshKeyRepository.getDecryptedKeyBytes(keyId) else null
+        if (keyBytes != null && key != null) {
+            // Cert is public material so the same fetch works for both
+            // software and FIDO2 paths; null = plain pubkey auth.
+            val certBytes = sshKeyRepository.getCertificateBytes(keyId)
+            if (key.keyType.startsWith("sk-")) {
+                Log.d(TAG, "Using FIDO2 SK key: ${key.keyType}" +
+                    if (certBytes != null) " (with certificate)" else "")
+                return ConnectionConfig.AuthMethod.FidoKey(skKeyData = keyBytes, certBytes = certBytes)
+            }
+            // For encrypted keys, pass the original encrypted bytes + passphrase.
+            // JSch decrypts at auth time — key never stored in plaintext.
+            val passphrase = if (key.isEncrypted) password.toCharArray() else CharArray(0)
+            return ConnectionConfig.AuthMethod.PrivateKey(
+                keyBytes = if (key.isEncrypted) keyBytes else rawKeyToPem(keyBytes, key.keyType),
+                passphrase = passphrase,
+                certificateBytes = certBytes,
+            )
+        }
+        return null
+    }
+
+    /**
+     * Every stored unencrypted key as a [ConnectionConfig.AuthMethod.PrivateKeys]
+     * "try them all" bundle, or null if none. Encrypted keys are skipped (no
+     * passphrase here); biometric-protected keys are included (each prompts via
+     * its keystore gate).
+     */
+    private suspend fun resolveAnyUnencryptedKeys(): ConnectionConfig.AuthMethod? {
+        val keys = sshKeyRepository.getAllDecrypted().filter { !it.isEncrypted }
+        if (keys.isEmpty()) return null
+        return ConnectionConfig.AuthMethod.PrivateKeys(
+            keys = keys.map { key -> key.label to rawKeyToPem(key.privateKeyBytes, key.keyType) },
+        )
     }
 
     /**
@@ -3680,7 +3717,7 @@ class ConnectionsViewModel @Inject constructor(
             }
 
             withContext(Dispatchers.IO) {
-                val authMethod = resolveAuthMethod(profile, password)
+                val authMethod = resolveAuthMethods(profile, password)
                 val config = ConnectionConfig(
                     host = profile.host,
                     port = profile.port,
@@ -3744,7 +3781,7 @@ class ConnectionsViewModel @Inject constructor(
 
         try {
             val client = withContext(Dispatchers.IO) {
-                val authMethod = resolveAuthMethod(profile, password)
+                val authMethod = resolveAuthMethods(profile, password)
                 val config = ConnectionConfig(
                     host = profile.host,
                     port = profile.port,
@@ -3801,7 +3838,7 @@ class ConnectionsViewModel @Inject constructor(
 
         try {
             val client = withContext(Dispatchers.IO) {
-                val authMethod = resolveAuthMethod(profile, password)
+                val authMethod = resolveAuthMethods(profile, password)
                 val config = ConnectionConfig(
                     host = profile.host,
                     port = profile.port,

@@ -36,7 +36,7 @@ import sh.haven.core.data.db.entities.WorkspaceProfile
         SyncProfile::class,
         ProotInstallLog::class,
     ],
-    version = 55,
+    version = 56,
     exportSchema = true,
 )
 abstract class HavenDatabase : RoomDatabase() {
@@ -864,6 +864,30 @@ abstract class HavenDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_proot_install_log_distroId` " +
                         "ON `proot_install_log` (`distroId`)",
+                )
+            }
+        }
+
+        // #166: ordered multi-factor auth methods. Adds the authMethods
+        // column and backfills each profile's single legacy method
+        // (authType/keyId) as a one-element list, so existing profiles
+        // connect exactly as before.
+        val MIGRATION_55_56 = object : Migration(55, 56) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(
+                    db, "connection_profiles", "authMethods", "TEXT NOT NULL DEFAULT ''",
+                )
+                db.execSQL(
+                    """
+                    UPDATE `connection_profiles`
+                    SET `authMethods` = CASE
+                        WHEN `authType` = 'KEY' AND `keyId` IS NOT NULL AND `keyId` != ''
+                            THEN 'KEY:' || `keyId`
+                        WHEN `authType` = 'KEY' THEN 'KEY'
+                        ELSE 'PASSWORD'
+                    END
+                    WHERE `authMethods` = ''
+                    """.trimIndent(),
                 )
             }
         }

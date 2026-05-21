@@ -8,6 +8,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -25,14 +26,20 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.HorizontalDivider
@@ -224,6 +231,17 @@ fun ConnectionEditDialog(
     var proxyHost by rememberSaveable { mutableStateOf(existing?.proxyHost ?: "") }
     var proxyPort by rememberSaveable { mutableStateOf(existing?.proxyPort?.toString() ?: "1080") }
     var keyId by rememberSaveable { mutableStateOf(existing?.keyId) }
+    // #166: ordered auth methods, serialised so rememberSaveable can persist
+    // it across config changes. Seeded from the profile's parsed specs (which
+    // fall back to its legacy authType/keyId for pre-#166 profiles).
+    var authMethodsText by rememberSaveable {
+        mutableStateOf(
+            ConnectionProfile.AuthMethodSpec.serializeList(
+                existing?.authMethodSpecs
+                    ?: listOf(ConnectionProfile.AuthMethodSpec.Password),
+            ),
+        )
+    }
     var tunnelConfigId by rememberSaveable { mutableStateOf(existing?.tunnelConfigId) }
 
     // Cloudflare Tunnel transport (GH #154). When `useCloudflareTunnel`
@@ -312,6 +330,13 @@ fun ConnectionEditDialog(
     var portKnockSequence by rememberSaveable {
         mutableStateOf(existing?.portKnockSequence ?: "")
     }
+    // Collapsible-section state for the SSH form (#dialog tidy-up). New
+    // users see the essentials (Connection, Terminal, Authentication)
+    // expanded; the rest start folded. rememberSaveable so toggles survive
+    // rotation.
+    var secConnectionExpanded by rememberSaveable { mutableStateOf(false) }
+    var secTerminalExpanded by rememberSaveable { mutableStateOf(true) }
+    var secAuthExpanded by rememberSaveable { mutableStateOf(true) }
     var portKnockDelayMs by rememberSaveable {
         mutableStateOf((existing?.portKnockDelayMs ?: 100).toString())
     }
@@ -1165,7 +1190,7 @@ fun ConnectionEditDialog(
                         }
                     }
                 } else if (connectionType == "SSH") {
-                    ConnectionSection(stringResource(R.string.connections_section_connection))
+                    CollapsibleSection(stringResource(R.string.connections_section_connection), secConnectionExpanded, { secConnectionExpanded = !secConnectionExpanded }) {
                     // Discovered hosts — filter by typed prefix
                     val filteredHosts = remember(discoveredHosts, host) {
                         val prefix = host.lowercase()
@@ -1399,7 +1424,8 @@ fun ConnectionEditDialog(
                     }
 
 
-                    ConnectionSection(stringResource(R.string.connections_section_terminal))
+                    }
+                    CollapsibleSection(stringResource(R.string.connections_section_terminal), secTerminalExpanded, { secTerminalExpanded = !secTerminalExpanded }) {
                     // Session manager
                     Spacer(Modifier.height(4.dp))
                     val defaultSessionLabel = stringResource(
@@ -1710,7 +1736,8 @@ fun ConnectionEditDialog(
                         Text(activeSchemeEnum?.label ?: stringResource(R.string.connections_color_scheme_inherit))
                     }
 
-                    ConnectionSection(stringResource(R.string.connections_section_authentication))
+                    }
+                    CollapsibleSection(stringResource(R.string.connections_section_authentication), secAuthExpanded, { secAuthExpanded = !secAuthExpanded }) {
                     // Agent forwarding toggle (OpenSSH ForwardAgent)
                     Spacer(Modifier.height(4.dp))
                     BooleanToggleRow(
@@ -1758,75 +1785,23 @@ fun ConnectionEditDialog(
                         )
                     }
 
-                    // SSH key selector
-                    if (sshKeys.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
-                        var keyExpanded by remember { mutableStateOf(false) }
-                        val selectedKey = sshKeys.firstOrNull { it.id == keyId }
-                        ExposedDropdownMenuBox(
-                            expanded = keyExpanded,
-                            onExpandedChange = { keyExpanded = it },
-                        ) {
-                            OutlinedTextField(
-                                value = selectedKey?.label ?: stringResource(R.string.connections_ssh_key_any),
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text(stringResource(R.string.connections_field_ssh_key)) },
-                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(keyExpanded) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
-                            )
-                            ExposedDropdownMenu(
-                                expanded = keyExpanded,
-                                onDismissRequest = { keyExpanded = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.connections_ssh_key_any)) },
-                                    onClick = {
-                                        keyId = null
-                                        keyExpanded = false
-                                    },
-                                )
-                                sshKeys.forEach { key ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Column {
-                                                Text(key.label)
-                                                Text(
-                                                    "${key.keyType} ${key.fingerprintSha256.take(20)}...",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            }
-                                        },
-                                        onClick = {
-                                            keyId = key.id
-                                            keyExpanded = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        // No keys exist yet — surface the path instead of
-                        // hiding the whole control, so attaching a key is
-                        // discoverable from inside the connection editor
-                        // (#170). The Keys tab is now shown once an SSH
-                        // connection exists, so "the Keys tab" is reachable.
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            stringResource(R.string.connections_ssh_key_none_hint),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    // Ordered auth methods (#166): attempt these in order in a
+                    // single connect, so a server requiring publickey+password
+                    // (or PAM chains) is satisfied. A single method behaves
+                    // exactly as the old key/password picker did.
+                    Spacer(Modifier.height(8.dp))
+                    AuthMethodsEditor(
+                        specsText = authMethodsText,
+                        sshKeys = sshKeys,
+                        onChange = { authMethodsText = it },
+                    )
 
                     // Saved VNC settings (shown when the SSH profile has had
                     // VNC configured via the terminal's VNC quick-dialog with
                     // "Save for this connection" ticked). Without this block
                     // the only way to edit was to delete and recreate the
                     // profile — #104.
+                    }
                     if (vncSettingsStored) {
                         ConnectionSection(stringResource(R.string.connections_section_embedded_vnc))
                         OutlinedTextField(
@@ -2598,7 +2573,18 @@ fun ConnectionEditDialog(
                             proxyType = if (useCloudflareTunnel) null else proxyType,
                             proxyHost = if (useCloudflareTunnel) null else proxyHost.ifBlank { null },
                             proxyPort = proxyPort.toIntOrNull() ?: 1080,
-                            keyId = keyId,
+                            // #166: persist the ordered method list, and keep
+                            // the legacy authType/keyId in sync with the
+                            // primary (first) method so code paths that still
+                            // read them (list_connections, audit labels) stay
+                            // correct.
+                            authMethods = authMethodsText,
+                            authType = if (ConnectionProfile.AuthMethodSpec.parseList(authMethodsText)
+                                    .firstOrNull() is ConnectionProfile.AuthMethodSpec.Key
+                            ) ConnectionProfile.AuthType.KEY else ConnectionProfile.AuthType.PASSWORD,
+                            keyId = ConnectionProfile.AuthMethodSpec.parseList(authMethodsText)
+                                .filterIsInstance<ConnectionProfile.AuthMethodSpec.Key>()
+                                .firstOrNull()?.keyId,
                             // tunnelConfigId is owned by the ViewModel save
                             // helper when the user picks the inline CF
                             // transport — it overwrites this with the
@@ -2715,6 +2701,43 @@ private fun ConnectionSection(title: String) {
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
     )
+}
+
+/**
+ * A [ConnectionSection] header that folds its [content] away. Tapping the
+ * header toggles [expanded] via [onToggle]; a chevron rotates to show
+ * state. Used to declutter the (long) connection editor so new users see
+ * only the essential sections expanded and can reveal the rest on demand.
+ */
+@Composable
+private fun CollapsibleSection(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button) { onToggle() }
+            .padding(top = 16.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+            contentDescription = if (expanded) "Collapse $title" else "Expand $title",
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    }
+    if (expanded) {
+        Column(modifier = Modifier.fillMaxWidth(), content = content)
+    }
 }
 
 /**
@@ -2861,6 +2884,115 @@ private fun BooleanToggleRow(
                 description,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Ordered editor for a profile's auth methods (#166). Operates on the
+ * serialised [specsText] (so the caller can hold it in rememberSaveable)
+ * and emits the new serialisation via [onChange]. Reorder with the
+ * up/down arrows, remove with ✕ (the last method can't be removed), and
+ * add Password / SSH key / Keyboard-interactive from the menu. A single
+ * method behaves exactly as the old key/password picker.
+ */
+@Composable
+private fun AuthMethodsEditor(
+    specsText: String,
+    sshKeys: List<sh.haven.core.data.db.entities.SshKey>,
+    onChange: (String) -> Unit,
+) {
+    val specs = ConnectionProfile.AuthMethodSpec.parseList(specsText)
+    fun emit(newList: List<ConnectionProfile.AuthMethodSpec>) =
+        onChange(ConnectionProfile.AuthMethodSpec.serializeList(newList))
+    fun swap(i: Int, j: Int) {
+        val m = specs.toMutableList()
+        val t = m[i]; m[i] = m[j]; m[j] = t
+        emit(m)
+    }
+
+    Text("Authentication methods", style = MaterialTheme.typography.bodyMedium)
+    Text(
+        "Attempted in order in a single connect — for servers that require more than one (e.g. key + password, or PAM/OTP chains).",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(4.dp))
+
+    specs.forEachIndexed { index, spec ->
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        ) {
+            Text("${index + 1}.", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.width(8.dp))
+            when (spec) {
+                ConnectionProfile.AuthMethodSpec.Password ->
+                    Text("Password", modifier = Modifier.weight(1f))
+                ConnectionProfile.AuthMethodSpec.KeyboardInteractive ->
+                    Text("Keyboard-interactive (OTP)", modifier = Modifier.weight(1f))
+                is ConnectionProfile.AuthMethodSpec.Key -> {
+                    var expanded by remember { mutableStateOf(false) }
+                    Box(modifier = Modifier.weight(1f)) {
+                        OutlinedButton(onClick = { expanded = true }) {
+                            Text(sshKeys.firstOrNull { it.id == spec.keyId }?.label ?: "SSH key: any")
+                        }
+                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Any key") },
+                                onClick = {
+                                    emit(specs.toMutableList().also { it[index] = ConnectionProfile.AuthMethodSpec.Key(null) })
+                                    expanded = false
+                                },
+                            )
+                            sshKeys.forEach { key ->
+                                DropdownMenuItem(
+                                    text = { Text(key.label) },
+                                    onClick = {
+                                        emit(specs.toMutableList().also { it[index] = ConnectionProfile.AuthMethodSpec.Key(key.id) })
+                                        expanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            IconButton(onClick = { swap(index, index - 1) }, enabled = index > 0) {
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up")
+            }
+            IconButton(onClick = { swap(index, index + 1) }, enabled = index < specs.size - 1) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move down")
+            }
+            IconButton(
+                onClick = { emit(specs.toMutableList().also { it.removeAt(index) }) },
+                enabled = specs.size > 1,
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Remove")
+            }
+        }
+    }
+
+    var addExpanded by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { addExpanded = true }) {
+            Icon(Icons.Default.Add, contentDescription = null)
+            Spacer(Modifier.width(4.dp))
+            Text("Add method")
+        }
+        DropdownMenu(expanded = addExpanded, onDismissRequest = { addExpanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Password") },
+                onClick = { emit(specs + ConnectionProfile.AuthMethodSpec.Password); addExpanded = false },
+            )
+            DropdownMenuItem(
+                text = { Text("SSH key") },
+                onClick = { emit(specs + ConnectionProfile.AuthMethodSpec.Key(null)); addExpanded = false },
+            )
+            DropdownMenuItem(
+                text = { Text("Keyboard-interactive (OTP)") },
+                onClick = { emit(specs + ConnectionProfile.AuthMethodSpec.KeyboardInteractive); addExpanded = false },
             )
         }
     }

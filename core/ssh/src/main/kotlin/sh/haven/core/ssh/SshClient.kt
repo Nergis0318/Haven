@@ -48,6 +48,70 @@ class SshClient : Closeable {
     internal val jschSession: Session?
         get() = session
 
+    /** Flatten a possibly-[ConnectionConfig.AuthMethod.Multi] into its leaves, in order. */
+    private fun flattenAuth(m: ConnectionConfig.AuthMethod): List<ConnectionConfig.AuthMethod> =
+        if (m is ConnectionConfig.AuthMethod.Multi) m.methods.flatMap(::flattenAuth) else listOf(m)
+
+    /**
+     * Register every credential in [config]'s auth method(s) on [sess]/[jsch],
+     * flattening a [ConnectionConfig.AuthMethod.Multi] so a multi-factor chain
+     * (`publickey,password`, …) has all its credentials available at once and
+     * JSch can satisfy the server's partial-success sequence. Returns the
+     * password to seed the keyboard-interactive fallback (last Password wins),
+     * or null. Identity names are unique per call so re-adds across reconnects
+     * don't collide in JSch's identity repository. (#166)
+     */
+    private fun applyAuthMethods(config: ConnectionConfig, sess: Session): CharArray? {
+        var fallbackKiPassword: CharArray? = null
+        for (auth in flattenAuth(config.authMethod)) {
+            when (auth) {
+                is ConnectionConfig.AuthMethod.Multi -> { /* flattened above */ }
+                is ConnectionConfig.AuthMethod.Password -> {
+                    sess.setPassword(charsToUtf8Bytes(auth.password))
+                    // Silently satisfy single-prompt "Password:" KI rounds —
+                    // servers that route the password through the
+                    // keyboard-interactive channel shouldn't make the user
+                    // retype a saved password.
+                    fallbackKiPassword = auth.password
+                }
+                is ConnectionConfig.AuthMethod.PrivateKey -> {
+                    // Pass the OpenSSH cert (when present) as the third
+                    // public-key arg; JSch wraps it for CA validation. (#133)
+                    jsch.addIdentity(
+                        "haven-key-${System.nanoTime()}",
+                        auth.keyBytes,
+                        auth.certificateBytes,
+                        if (auth.passphrase.isNotEmpty()) charsToUtf8Bytes(auth.passphrase) else null,
+                    )
+                }
+                is ConnectionConfig.AuthMethod.PrivateKeys -> {
+                    auth.keys.forEachIndexed { i, (label, keyBytes) ->
+                        jsch.addIdentity("haven-key-$i-$label-${System.nanoTime()}", keyBytes, null, null)
+                    }
+                }
+                is ConnectionConfig.AuthMethod.FidoKey -> {
+                    val skData = SkKeyData.deserialize(auth.skKeyData)
+                    Log.d(TAG, "FIDO2 SK key: alg=${skData.algorithmName}")
+                    val fidoIdentity = FidoIdentity(skData, fidoAuthenticator!!)
+                    val identity = if (auth.certBytes != null) {
+                        val certKeyType = SshCertificateParser.getCertKeyType(skData.algorithmName)
+                        CertificateWrappedIdentity(fidoIdentity, auth.certBytes, certKeyType)
+                    } else fidoIdentity
+                    jsch.addIdentity(identity, null)
+                    val currentAlgs = sess.getConfig("PubkeyAcceptedAlgorithms") ?: ""
+                    val skAlgs = "sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com"
+                    val skCertAlgs = "sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"
+                    val advertised = if (auth.certBytes != null) "$skCertAlgs,$skAlgs" else skAlgs
+                    sess.setConfig(
+                        "PubkeyAcceptedAlgorithms",
+                        if (currentAlgs.isNotEmpty()) "$advertised,$currentAlgs" else advertised,
+                    )
+                }
+            }
+        }
+        return fallbackKiPassword
+    }
+
     /**
      * Connect to an SSH server using the given config.
      * This suspends on Dispatchers.IO.
@@ -73,53 +137,7 @@ class SshClient : Closeable {
         sess.serverAliveInterval = 15_000
         sess.serverAliveCountMax = 3
 
-        var fallbackKiPassword: CharArray? = null
-        when (val auth = config.authMethod) {
-            is ConnectionConfig.AuthMethod.Password -> {
-                sess.setPassword(charsToUtf8Bytes(auth.password))
-                // Silently satisfy single-prompt "Password:" KI rounds —
-                // servers that advertise keyboard-interactive before
-                // password auth route the password through the KI channel,
-                // and we shouldn't make the user retype a saved password.
-                fallbackKiPassword = auth.password
-            }
-            is ConnectionConfig.AuthMethod.PrivateKey -> {
-                // Pass the OpenSSH cert (when present) as the third
-                // public-key arg. JSch detects the cert magic bytes and
-                // internally wraps the identity in
-                // OpenSshCertificateAwareIdentityFile, so the server
-                // gets cert+sig validated via its trusted CA. (#133)
-                jsch.addIdentity(
-                    "haven-key",
-                    auth.keyBytes,
-                    auth.certificateBytes,
-                    if (auth.passphrase.isNotEmpty()) charsToUtf8Bytes(auth.passphrase) else null,
-                )
-            }
-            is ConnectionConfig.AuthMethod.PrivateKeys -> {
-                auth.keys.forEachIndexed { i, (label, keyBytes) ->
-                    jsch.addIdentity("haven-key-$i-$label", keyBytes, null, null)
-                }
-            }
-            is ConnectionConfig.AuthMethod.FidoKey -> {
-                val skData = SkKeyData.deserialize(auth.skKeyData)
-                Log.d(TAG, "FIDO2 SK key: alg=${skData.algorithmName}, app=${skData.application}")
-                val fidoIdentity = FidoIdentity(skData, fidoAuthenticator!!)
-                val identity = if (auth.certBytes != null) {
-                    val certKeyType = SshCertificateParser.getCertKeyType(skData.algorithmName)
-                    Log.d(TAG, "FIDO2 SK key with certificate: certType=$certKeyType")
-                    CertificateWrappedIdentity(fidoIdentity, auth.certBytes, certKeyType)
-                } else fidoIdentity
-                jsch.addIdentity(identity, null)
-                val currentAlgs = sess.getConfig("PubkeyAcceptedAlgorithms") ?: ""
-                val skAlgs = "sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com"
-                val skCertAlgs = "sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"
-                val advertised = if (auth.certBytes != null) "$skCertAlgs,$skAlgs" else skAlgs
-                sess.setConfig("PubkeyAcceptedAlgorithms",
-                    if (currentAlgs.isNotEmpty()) "$advertised,$currentAlgs" else advertised)
-                Log.d(TAG, "PubkeyAcceptedAlgorithms: ${sess.getConfig("PubkeyAcceptedAlgorithms")}")
-            }
-        }
+        val fallbackKiPassword: CharArray? = applyAuthMethods(config, sess)
 
         if (keyboardInteractivePrompter != null) {
             sess.userInfo = KeyboardInteractiveUserInfo(
@@ -264,42 +282,7 @@ class SshClient : Closeable {
         sess.serverAliveInterval = 15_000
         sess.serverAliveCountMax = 3
 
-        var fallbackKiPassword: CharArray? = null
-        when (val auth = config.authMethod) {
-            is ConnectionConfig.AuthMethod.Password -> {
-                sess.setPassword(charsToUtf8Bytes(auth.password))
-                fallbackKiPassword = auth.password
-            }
-            is ConnectionConfig.AuthMethod.PrivateKey -> {
-                jsch.addIdentity(
-                    "haven-key-${System.nanoTime()}",
-                    auth.keyBytes,
-                    auth.certificateBytes,
-                    if (auth.passphrase.isNotEmpty()) charsToUtf8Bytes(auth.passphrase) else null,
-                )
-            }
-            is ConnectionConfig.AuthMethod.PrivateKeys -> {
-                auth.keys.forEachIndexed { i, (label, keyBytes) ->
-                    jsch.addIdentity("haven-key-$i-$label", keyBytes, null, null)
-                }
-            }
-            is ConnectionConfig.AuthMethod.FidoKey -> {
-                val skData = SkKeyData.deserialize(auth.skKeyData)
-                Log.d(TAG, "FIDO2 SK key (reconnect): alg=${skData.algorithmName}")
-                val fidoIdentity = FidoIdentity(skData, fidoAuthenticator!!)
-                val identity = if (auth.certBytes != null) {
-                    val certKeyType = SshCertificateParser.getCertKeyType(skData.algorithmName)
-                    CertificateWrappedIdentity(fidoIdentity, auth.certBytes, certKeyType)
-                } else fidoIdentity
-                jsch.addIdentity(identity, null)
-                val currentAlgs = sess.getConfig("PubkeyAcceptedAlgorithms") ?: ""
-                val skAlgs = "sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com"
-                val skCertAlgs = "sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"
-                val advertised = if (auth.certBytes != null) "$skCertAlgs,$skAlgs" else skAlgs
-                sess.setConfig("PubkeyAcceptedAlgorithms",
-                    if (currentAlgs.isNotEmpty()) "$advertised,$currentAlgs" else advertised)
-            }
-        }
+        val fallbackKiPassword: CharArray? = applyAuthMethods(config, sess)
 
         if (keyboardInteractivePrompter != null) {
             sess.userInfo = KeyboardInteractiveUserInfo(

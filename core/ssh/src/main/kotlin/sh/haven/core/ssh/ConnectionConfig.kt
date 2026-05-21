@@ -54,6 +54,17 @@ data class ConnectionConfig(
     )
 
     sealed interface AuthMethod {
+        /**
+         * Several auth methods presented together in one connect attempt,
+         * in [methods] order, so a server requiring a multi-factor chain
+         * (e.g. `AuthenticationMethods publickey,password`) can complete it
+         * — JSch registers every credential and the server drives the
+         * partial-success sequence. Keyboard-interactive is always
+         * available via the prompter, so it needn't appear here. Nesting a
+         * [Multi] inside [methods] is flattened on apply. (#166)
+         */
+        data class Multi(val methods: List<AuthMethod>) : AuthMethod
+
         /** Password auth. Use [clear] to zero the password from memory after authentication. */
         class Password(val password: CharArray) : AuthMethod {
             constructor(passwordString: String) : this(passwordString.toCharArray())

@@ -121,4 +121,60 @@ class ConnectionProfileTest {
         val profile = ConnectionProfile(label = "t", host = "h", username = "u")
         assertNull(profile.rdpPassword)
     }
+
+    // --- #166 multi-factor auth methods ---
+
+    @Test
+    fun `authMethodSpecs falls back to PASSWORD when authMethods blank and authType PASSWORD`() {
+        val p = ConnectionProfile(label = "t", host = "h", username = "u")
+        assertEquals(listOf(ConnectionProfile.AuthMethodSpec.Password), p.authMethodSpecs)
+    }
+
+    @Test
+    fun `authMethodSpecs falls back to Key with keyId when authType KEY`() {
+        val p = ConnectionProfile(
+            label = "t", host = "h", username = "u",
+            authType = ConnectionProfile.AuthType.KEY, keyId = "k1",
+        )
+        assertEquals(listOf(ConnectionProfile.AuthMethodSpec.Key("k1")), p.authMethodSpecs)
+    }
+
+    @Test
+    fun `authMethodSpecs parses an ordered key+password list`() {
+        val p = ConnectionProfile(
+            label = "t", host = "h", username = "u",
+            authMethods = "KEY:k1\nPASSWORD",
+        )
+        assertEquals(
+            listOf(
+                ConnectionProfile.AuthMethodSpec.Key("k1"),
+                ConnectionProfile.AuthMethodSpec.Password,
+            ),
+            p.authMethodSpecs,
+        )
+    }
+
+    @Test
+    fun `AuthMethodSpec round-trips through serialize and parse`() {
+        val specs = listOf(
+            ConnectionProfile.AuthMethodSpec.Key("abc"),
+            ConnectionProfile.AuthMethodSpec.Password,
+            ConnectionProfile.AuthMethodSpec.KeyboardInteractive,
+            ConnectionProfile.AuthMethodSpec.Key(null),
+        )
+        val text = ConnectionProfile.AuthMethodSpec.serializeList(specs)
+        assertEquals(specs, ConnectionProfile.AuthMethodSpec.parseList(text))
+    }
+
+    @Test
+    fun `AuthMethodSpec parseList ignores blank and unknown tokens`() {
+        val parsed = ConnectionProfile.AuthMethodSpec.parseList("PASSWORD\n\nBOGUS\nKEY:x")
+        assertEquals(
+            listOf(
+                ConnectionProfile.AuthMethodSpec.Password,
+                ConnectionProfile.AuthMethodSpec.Key("x"),
+            ),
+            parsed,
+        )
+    }
 }

@@ -1481,6 +1481,11 @@ internal class McpTools(
                     put("tunnelOnly", JSONObject().apply { put("type", "boolean"); put("description", "SSH only: tunnel-only mode (#150). When true, the profile brings up the SSH transport and registers port forwards but does not open a terminal. Default false. Pair with auto_reconnect for autossh-style keepalive.") })
                     put("useMosh", JSONObject().apply { put("type", "boolean"); put("description", "SSH only: when true, the profile uses Mosh on top of the SSH bootstrap. SSH execs `mosh-server new -s`, parses MOSH CONNECT, then the UDP transport takes over. Default false.") })
                     put("keyId", JSONObject().apply { put("type", "string"); put("description", "SSH only: id of a saved SSH key (from list_ssh_keys) to authenticate with. Mutually optional with password.") })
+                    put("authMethods", JSONObject().apply {
+                        put("type", "array")
+                        put("items", JSONObject().apply { put("type", "string") })
+                        put("description", "SSH only (#166): ordered multi-factor auth methods attempted in one connect, for servers requiring a chain like publickey,password. Each element is a token: \"PASSWORD\", \"KEY\" (any saved key), \"KEY:<keyId>\", or \"KEYBOARD_INTERACTIVE\". Omit for the single-method default derived from keyId/password.")
+                    })
                     put("portKnockSequence", JSONObject().apply { put("type", "string"); put("description", "Optional port-knock sequence fired before the real connect. Format: whitespace/comma-separated 'port[/proto]' tokens — e.g. '7000 8000 9000' (all TCP) or '7000/tcp 8000/udp 9000/tcp'. Empty = disabled.") })
                     put("portKnockDelayMs", JSONObject().apply { put("type", "integer"); put("description", "Inter-knock delay in ms (default 100). Ignored when portKnockSequence is empty.") })
                 })
@@ -1664,6 +1669,9 @@ internal class McpTools(
         put("authType", p.authType.name)
         put("hasStoredPassword", !p.sshPassword.isNullOrEmpty())
         put("hasKey", p.keyId != null)
+        if (p.authMethodSpecs.size > 1) {
+            put("authMethods", org.json.JSONArray(p.authMethodSpecs.map { it.serialize() }))
+        }
         put("lastConnected", p.lastConnected ?: JSONObject.NULL)
         if (p.useMosh) put("useMosh", true)
         if (p.useEternalTerminal) put("useEternalTerminal", true)
@@ -4068,6 +4076,16 @@ internal class McpTools(
             throw IllegalArgumentException("tunnelOnly is only meaningful for SSH connections")
         }
 
+        // #166: optional ordered auth-method list. Each element is a token:
+        // "PASSWORD", "KEY" (any saved key), "KEY:<keyId>", or
+        // "KEYBOARD_INTERACTIVE". Serialised newline-per-token to match
+        // ConnectionProfile.authMethods. Empty/absent = derive from keyId.
+        val authMethodsArr = args.optJSONArray("authMethods")
+        val authMethodsText = if (authMethodsArr != null) {
+            (0 until authMethodsArr.length())
+                .joinToString("\n") { authMethodsArr.getString(it).trim() }
+        } else ""
+
         // Validate the knock sequence eagerly so an invalid string is
         // rejected at create time rather than silently saved and only
         // surfaced when the user (or agent) tries to connect. Empty/blank
@@ -4088,6 +4106,7 @@ internal class McpTools(
                 connectionType = "SSH",
                 useMosh = args.optBoolean("useMosh", false),
                 keyId = args.optString("keyId").ifBlank { null },
+                authMethods = authMethodsText,
                 tunnelConfigId = tunnelConfigId,
                 tunnelOnly = tunnelOnly,
                 portKnockSequence = knockSequence,
