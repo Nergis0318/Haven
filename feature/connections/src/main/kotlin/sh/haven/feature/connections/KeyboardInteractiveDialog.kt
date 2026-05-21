@@ -46,7 +46,11 @@ fun KeyboardInteractiveDialog(
             "HavenKI",
             "Dialog: remember(challenge) → NEW responses list for prompts=${challenge.prompts.size} first='${challenge.prompts.firstOrNull()?.text}'",
         )
-        mutableStateListOf<String>().apply { addAll(List(challenge.prompts.size) { "" }) }
+        // Pre-fill from challenge.prefilled where present (#178 confirm-OTP
+        // path supplies the generated code); blank otherwise.
+        mutableStateListOf<String>().apply {
+            addAll(List(challenge.prompts.size) { i -> challenge.prefilled.getOrNull(i) ?: "" })
+        }
     }
 
     DisposableEffect(challenge) {

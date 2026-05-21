@@ -26,6 +26,13 @@ data class ConnectionProfile(
      */
     @ColumnInfo(defaultValue = "")
     val authMethods: String = "",
+    /**
+     * When true, a TOTP auth element shows the keyboard-interactive dialog
+     * with the generated code pre-filled for one-tap confirm/edit instead
+     * of auto-submitting it (#178). Default false = auto-submit.
+     */
+    @ColumnInfo(defaultValue = "0")
+    val totpConfirmBeforeSend: Boolean = false,
     val colorTag: Int = 0,
     val lastConnected: Long? = null,
     val sortOrder: Int = 0,
@@ -245,6 +252,17 @@ data class ConnectionProfile(
             override fun serialize() = "KEYBOARD_INTERACTIVE"
         }
 
+        /**
+         * OATH-TOTP auto-fill (#178): the keyboard-interactive "Verification
+         * code:" prompt is answered from the stored TOTP secret [secretId]
+         * (null = any single stored secret). Like [KeyboardInteractive] this
+         * is handled by the live prompter, not registered as a JSch
+         * credential — so it contributes no entry to the resolved auth list.
+         */
+        data class Totp(val secretId: String?) : AuthMethodSpec {
+            override fun serialize() = if (secretId.isNullOrEmpty()) "TOTP" else "TOTP:$secretId"
+        }
+
         companion object {
             fun parseList(text: String?): List<AuthMethodSpec> =
                 text?.lineSequence()
@@ -262,6 +280,8 @@ data class ConnectionProfile(
                 token == "KEYBOARD_INTERACTIVE" -> KeyboardInteractive
                 token == "KEY" -> Key(null)
                 token.startsWith("KEY:") -> Key(token.removePrefix("KEY:").ifEmpty { null })
+                token == "TOTP" -> Totp(null)
+                token.startsWith("TOTP:") -> Totp(token.removePrefix("TOTP:").ifEmpty { null })
                 else -> null
             }
         }

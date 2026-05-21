@@ -18,6 +18,14 @@ data class KeyboardInteractiveChallenge(
     /** Server-provided instructions shown above the prompts. May be empty. */
     val instruction: String,
     val prompts: List<Prompt>,
+    /**
+     * Optional per-prompt suggested answers, parallel to [prompts]. A
+     * non-null entry pre-fills the corresponding field in the UI — used
+     * by the TOTP auto-fill path (#178) when the profile asks to confirm
+     * the generated code before sending rather than auto-submitting.
+     * Empty (the default) means no pre-fill.
+     */
+    val prefilled: List<String?> = emptyList(),
 ) {
     data class Prompt(
         val text: String,

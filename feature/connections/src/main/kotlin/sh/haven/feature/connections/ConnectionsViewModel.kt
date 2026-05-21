@@ -107,6 +107,7 @@ class ConnectionsViewModel @Inject constructor(
     private val localSessionManager: LocalSessionManager,
     private val sessionManagerRegistry: SessionManagerRegistry,
     private val sshKeyRepository: SshKeyRepository,
+    private val totpSecretRepository: sh.haven.core.data.repository.TotpSecretRepository,
     private val preferencesRepository: UserPreferencesRepository,
     private val hostKeyVerifier: HostKeyVerifier,
     private val connectionLogRepository: ConnectionLogRepository,
@@ -172,6 +173,10 @@ class ConnectionsViewModel @Inject constructor(
 
     val sshKeys: StateFlow<List<SshKey>> = sshKeyRepository.observeAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val totpSecrets: StateFlow<List<sh.haven.core.data.db.entities.TotpSecret>> =
+        totpSecretRepository.observeAll()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /**
      * Shared (non-embedded) tunnel configs the route-through dropdown
@@ -1867,6 +1872,8 @@ class ConnectionsViewModel @Inject constructor(
                             config,
                             proxy = proxy,
                             keyboardInteractivePrompter = keyboardInteractivePrompter,
+                            totpCodeProvider = buildTotpCodeProvider(profile),
+                            confirmOtp = profile.totpConfirmBeforeSend,
                             preConnect = buildKnockHook(profile, verboseLogger),
                         )
                         runTofuVerification(hostKeyEntry, clientToDisconnectOnReject = client)
@@ -2089,6 +2096,8 @@ class ConnectionsViewModel @Inject constructor(
                             config,
                             proxy = proxy,
                             keyboardInteractivePrompter = keyboardInteractivePrompter,
+                            totpCodeProvider = buildTotpCodeProvider(profile),
+                            confirmOtp = profile.totpConfirmBeforeSend,
                             preConnect = buildKnockHook(profile, verboseLogger),
                         )
                         runTofuVerification(hostKeyEntry, clientToDisconnectOnReject = sshClient)
@@ -2223,6 +2232,8 @@ class ConnectionsViewModel @Inject constructor(
                             config,
                             proxy = proxy,
                             keyboardInteractivePrompter = keyboardInteractivePrompter,
+                            totpCodeProvider = buildTotpCodeProvider(profile),
+                            confirmOtp = profile.totpConfirmBeforeSend,
                             preConnect = buildKnockHook(profile, verboseLogger),
                         )
                         runTofuVerification(hostKeyEntry, clientToDisconnectOnReject = sshClient)
@@ -2338,11 +2349,14 @@ class ConnectionsViewModel @Inject constructor(
                     // Reuse the stored connection config from the first session
                     val configPair = sshSessionManager.getConnectionConfigForProfile(profileId) ?: break
                     val (config, _) = configPair
+                    val totpProvider = buildTotpCodeProvider(profile)
                     val newClient = withContext(Dispatchers.IO) {
                         SshClient().apply {
                             connectBlocking(
                                 config,
                                 keyboardInteractivePrompter = keyboardInteractivePrompter,
+                                totpCodeProvider = totpProvider,
+                                confirmOtp = profile.totpConfirmBeforeSend,
                                 preConnect = buildKnockHookBlocking(profile, verboseLogger = null),
                             )
                         }
@@ -2706,6 +2720,8 @@ class ConnectionsViewModel @Inject constructor(
                     val hostKeyEntry = jumpClient.connect(
                         config,
                         keyboardInteractivePrompter = keyboardInteractivePrompter,
+                        totpCodeProvider = buildTotpCodeProvider(jumpProfile),
+                        confirmOtp = jumpProfile.totpConfirmBeforeSend,
                     )
                     Log.d(TAG, "Jump host SSH connected, verifying host key...")
                     runTofuVerification(
@@ -3032,12 +3048,47 @@ class ConnectionsViewModel @Inject constructor(
                     if (spec.keyId != null) resolveExplicitKey(spec.keyId!!, password)
                     else resolveAnyUnencryptedKeys()
                 ConnectionProfile.AuthMethodSpec.KeyboardInteractive -> null
+                // TOTP is auto-filled into the live keyboard-interactive
+                // round (#178), not registered as a JSch credential.
+                is ConnectionProfile.AuthMethodSpec.Totp -> null
             }
         }
         return when {
             methods.isEmpty() -> ConnectionConfig.AuthMethod.Password(password)
             methods.size == 1 -> methods.single()
             else -> ConnectionConfig.AuthMethod.Multi(methods)
+        }
+    }
+
+    /**
+     * Build a live TOTP code provider for [profile] if its auth chain
+     * carries a `TOTP` element with a resolvable stored secret (#178).
+     * The secret is decrypted once here and captured in the closure; the
+     * code itself is generated on each invocation so it's current for the
+     * window the server validates. Returns null when the profile has no
+     * TOTP element or the referenced secret is missing/undecryptable —
+     * the keyboard-interactive prompt then falls through to the dialog.
+     */
+    private suspend fun buildTotpCodeProvider(profile: ConnectionProfile): (() -> String)? {
+        val totpSpec = profile.authMethodSpecs
+            .filterIsInstance<ConnectionProfile.AuthMethodSpec.Totp>()
+            .firstOrNull() ?: return null
+        // Explicit id, else the single stored secret if there's exactly one.
+        val specId = totpSpec.secretId
+        val secret = when {
+            !specId.isNullOrEmpty() -> totpSecretRepository.getById(specId)
+            else -> totpSecretRepository.getAll().singleOrNull()
+        } ?: return null
+        val plain = totpSecretRepository.getDecryptedSecret(secret.id) ?: return null
+        val algorithm = runCatching { sh.haven.core.security.Totp.Algorithm.valueOf(secret.algorithm) }
+            .getOrDefault(sh.haven.core.security.Totp.Algorithm.SHA1)
+        return {
+            sh.haven.core.security.Totp.generate(
+                secretBase32 = plain,
+                algorithm = algorithm,
+                digits = secret.digits,
+                periodSeconds = secret.periodSeconds,
+            )
         }
     }
 

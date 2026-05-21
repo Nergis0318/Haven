@@ -23,11 +23,13 @@ import javax.inject.Singleton
 class UnifiedKeystore @Inject constructor(
     private val sshKeySection: SshKeySection,
     private val profileCredentialSection: ProfileCredentialSection,
+    private val totpSecretSection: TotpSecretSection,
 ) : Keystore {
 
     private val sections: Map<KeystoreStore, KeystoreSection> = mapOf(
         sshKeySection.store to sshKeySection,
         profileCredentialSection.store to profileCredentialSection,
+        totpSecretSection.store to totpSecretSection,
     )
 
     override suspend fun enumerate(): List<KeystoreEntry> {
@@ -81,6 +83,7 @@ class UnifiedKeystore @Inject constructor(
         return when (store) {
             KeystoreStore.SSH_KEYS -> sshKeySection.setBiometricProtected(entryId, protected)
             KeystoreStore.PROFILE_CREDENTIALS -> false
+            KeystoreStore.TOTP_SECRETS -> false
         }
     }
 }

@@ -122,6 +122,8 @@ class SshClient : Closeable {
         connectTimeoutMs: Int = 10_000,
         proxy: HavenProxy? = null,
         keyboardInteractivePrompter: KeyboardInteractivePrompter? = null,
+        totpCodeProvider: (() -> String)? = null,
+        confirmOtp: Boolean = false,
         preConnect: (suspend () -> Unit)? = null,
     ): KnownHostEntry = withContext(Dispatchers.IO) {
         disconnect()
@@ -144,6 +146,8 @@ class SshClient : Closeable {
                 destination = "${config.username}@${config.host}:${config.port}",
                 prompter = keyboardInteractivePrompter,
                 fallbackPassword = fallbackKiPassword,
+                totpCodeProvider = totpCodeProvider,
+                autoSubmit = !confirmOtp,
             )
         }
 
@@ -269,6 +273,8 @@ class SshClient : Closeable {
         connectTimeoutMs: Int = 10_000,
         proxy: HavenProxy? = null,
         keyboardInteractivePrompter: KeyboardInteractivePrompter? = null,
+        totpCodeProvider: (() -> String)? = null,
+        confirmOtp: Boolean = false,
         preConnect: (() -> Unit)? = null,
     ): KnownHostEntry {
         disconnect()
@@ -289,6 +295,8 @@ class SshClient : Closeable {
                 destination = "${config.username}@${config.host}:${config.port}",
                 prompter = keyboardInteractivePrompter,
                 fallbackPassword = fallbackKiPassword,
+                totpCodeProvider = totpCodeProvider,
+                autoSubmit = !confirmOtp,
             )
         }
 

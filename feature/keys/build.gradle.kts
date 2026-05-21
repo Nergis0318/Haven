@@ -32,6 +32,7 @@ dependencies {
     implementation(project(":core:data"))
     implementation(project(":core:fido"))
     implementation(project(":core:stepca"))
+    implementation(project(":core:scan"))
     implementation(libs.coroutines.core)
 
     implementation(libs.activity.compose)

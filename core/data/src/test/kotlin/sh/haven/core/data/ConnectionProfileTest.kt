@@ -161,9 +161,30 @@ class ConnectionProfileTest {
             ConnectionProfile.AuthMethodSpec.Password,
             ConnectionProfile.AuthMethodSpec.KeyboardInteractive,
             ConnectionProfile.AuthMethodSpec.Key(null),
+            ConnectionProfile.AuthMethodSpec.Totp("sec1"),
+            ConnectionProfile.AuthMethodSpec.Totp(null),
         )
         val text = ConnectionProfile.AuthMethodSpec.serializeList(specs)
         assertEquals(specs, ConnectionProfile.AuthMethodSpec.parseList(text))
+    }
+
+    @Test
+    fun `AuthMethodSpec parses TOTP tokens with and without secret id`() {
+        assertEquals(
+            listOf(
+                ConnectionProfile.AuthMethodSpec.Key("k1"),
+                ConnectionProfile.AuthMethodSpec.Totp("sec1"),
+            ),
+            ConnectionProfile.AuthMethodSpec.parseList("KEY:k1\nTOTP:sec1"),
+        )
+        assertEquals("TOTP", ConnectionProfile.AuthMethodSpec.Totp(null).serialize())
+        assertEquals("TOTP:x", ConnectionProfile.AuthMethodSpec.Totp("x").serialize())
+    }
+
+    @Test
+    fun `totpConfirmBeforeSend defaults to false`() {
+        val p = ConnectionProfile(label = "t", host = "h", username = "u")
+        assertEquals(false, p.totpConfirmBeforeSend)
     }
 
     @Test

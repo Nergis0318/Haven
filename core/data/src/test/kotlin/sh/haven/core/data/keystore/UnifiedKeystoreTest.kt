@@ -28,6 +28,13 @@ class UnifiedKeystoreTest {
         label = id, algorithm = "test",
     )
 
+    // Relaxed empty TOTP section — contributes nothing to enumerate/fetch
+    // so the existing assertions are unaffected by the new registration.
+    private fun emptyTotpSection() = mockk<TotpSecretSection>(relaxed = true).apply {
+        every { store } returns KeystoreStore.TOTP_SECRETS
+        coEvery { enumerate() } returns emptyList()
+    }
+
     @Test
     fun `enumerate concatenates sections in registration order`() = runTest {
         val sshSection = mockk<SshKeySection>(relaxed = true).apply {
@@ -43,7 +50,7 @@ class UnifiedKeystoreTest {
                 entry("p1/sshPassword", KeystoreStore.PROFILE_CREDENTIALS),
             )
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
 
         val ids = keystore.enumerate().map { it.id }
         // SSH first (registered first in the constructor), creds after.
@@ -59,7 +66,7 @@ class UnifiedKeystoreTest {
         val credSection = mockk<ProfileCredentialSection>(relaxed = true).apply {
             every { store } returns KeystoreStore.PROFILE_CREDENTIALS
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
 
         assertTrue(keystore.wipe(KeystoreStore.SSH_KEYS, "k1"))
         coVerify { sshSection.wipe("k1") }
@@ -75,7 +82,7 @@ class UnifiedKeystoreTest {
         val credSection = mockk<ProfileCredentialSection>(relaxed = true).apply {
             every { store } returns KeystoreStore.PROFILE_CREDENTIALS
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
         assertFalse(keystore.wipe(KeystoreStore.SSH_KEYS, "ghost"))
     }
 
@@ -94,7 +101,7 @@ class UnifiedKeystoreTest {
                 entry("p1/sshPassword", KeystoreStore.PROFILE_CREDENTIALS),
             )
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
 
         val snapshot = keystore.exportAudit()
         assertEquals(3, snapshot.entries.size)
@@ -124,7 +131,7 @@ class UnifiedKeystoreTest {
         val credSection = mockk<ProfileCredentialSection>(relaxed = true).apply {
             every { store } returns KeystoreStore.PROFILE_CREDENTIALS
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
 
         val result = keystore.fetch(KeystoreStore.SSH_KEYS, "k1")
         assertTrue("expected Bytes, got: $result", result is KeystoreFetch.Bytes)
@@ -144,7 +151,7 @@ class UnifiedKeystoreTest {
         val credSection = mockk<ProfileCredentialSection>(relaxed = true).apply {
             every { store } returns KeystoreStore.PROFILE_CREDENTIALS
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
         assertEquals(KeystoreFetch.NotFound, keystore.fetch(KeystoreStore.SSH_KEYS, "ghost"))
     }
 
@@ -157,7 +164,7 @@ class UnifiedKeystoreTest {
         val credSection = mockk<ProfileCredentialSection>(relaxed = true).apply {
             every { store } returns KeystoreStore.PROFILE_CREDENTIALS
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
 
         assertTrue(keystore.setBiometricProtected(KeystoreStore.SSH_KEYS, "k1", true))
         coVerify { sshSection.setBiometricProtected("k1", true) }
@@ -175,7 +182,7 @@ class UnifiedKeystoreTest {
         val credSection = mockk<ProfileCredentialSection>(relaxed = true).apply {
             every { store } returns KeystoreStore.PROFILE_CREDENTIALS
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
 
         assertFalse(keystore.setBiometricProtected(KeystoreStore.PROFILE_CREDENTIALS, "p1/sshPassword", true))
         coVerify(exactly = 0) { sshSection.setBiometricProtected(any(), any()) }
@@ -190,7 +197,7 @@ class UnifiedKeystoreTest {
             every { store } returns KeystoreStore.PROFILE_CREDENTIALS
             coEvery { wipe("p1/sshPassword") } returns true
         }
-        val keystore = UnifiedKeystore(sshSection, credSection)
+        val keystore = UnifiedKeystore(sshSection, credSection, emptyTotpSection())
         assertTrue(keystore.wipe(KeystoreStore.PROFILE_CREDENTIALS, "p1/sshPassword"))
         coVerify { credSection.wipe("p1/sshPassword") }
         coVerify(exactly = 0) { sshSection.wipe(any()) }

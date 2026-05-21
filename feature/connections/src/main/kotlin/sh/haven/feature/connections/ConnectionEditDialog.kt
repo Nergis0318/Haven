@@ -108,6 +108,7 @@ fun ConnectionEditDialog(
     sshProfiles: List<ConnectionProfile> = emptyList(),
     groups: List<sh.haven.core.data.db.entities.ConnectionGroup> = emptyList(),
     sshKeys: List<sh.haven.core.data.db.entities.SshKey> = emptyList(),
+    totpSecrets: List<sh.haven.core.data.db.entities.TotpSecret> = emptyList(),
     tunnelConfigs: List<sh.haven.core.data.db.entities.TunnelConfig> = emptyList(),
     /**
      * The Cloudflare Tunnel transport row owned by [existing], if any
@@ -242,6 +243,7 @@ fun ConnectionEditDialog(
             ),
         )
     }
+    var totpConfirmBeforeSend by rememberSaveable { mutableStateOf(existing?.totpConfirmBeforeSend ?: false) }
     var tunnelConfigId by rememberSaveable { mutableStateOf(existing?.tunnelConfigId) }
 
     // Cloudflare Tunnel transport (GH #154). When `useCloudflareTunnel`
@@ -2092,8 +2094,21 @@ fun ConnectionEditDialog(
                     AuthMethodsEditor(
                         specsText = authMethodsText,
                         sshKeys = sshKeys,
+                        totpSecrets = totpSecrets,
                         onChange = { authMethodsText = it },
                     )
+                    // TOTP auto-fill submit behaviour (#178): shown only when
+                    // the chain carries a TOTP element.
+                    if (ConnectionProfile.AuthMethodSpec.parseList(authMethodsText)
+                            .any { it is ConnectionProfile.AuthMethodSpec.Totp }
+                    ) {
+                        BooleanToggleRow(
+                            label = "Confirm OTP before sending",
+                            checked = totpConfirmBeforeSend,
+                            onCheckedChange = { totpConfirmBeforeSend = it },
+                            description = "Show the generated code for one-tap confirm instead of submitting it automatically.",
+                        )
+                    }
 
                     // Saved VNC settings (shown when the SSH profile has had
                     // VNC configured via the terminal's VNC quick-dialog with
@@ -2589,6 +2604,7 @@ fun ConnectionEditDialog(
                             keyId = ConnectionProfile.AuthMethodSpec.parseList(authMethodsText)
                                 .filterIsInstance<ConnectionProfile.AuthMethodSpec.Key>()
                                 .firstOrNull()?.keyId,
+                            totpConfirmBeforeSend = totpConfirmBeforeSend,
                             // tunnelConfigId is owned by the ViewModel save
                             // helper when the user picks the inline CF
                             // transport — it overwrites this with the
@@ -2905,6 +2921,7 @@ private fun BooleanToggleRow(
 private fun AuthMethodsEditor(
     specsText: String,
     sshKeys: List<sh.haven.core.data.db.entities.SshKey>,
+    totpSecrets: List<sh.haven.core.data.db.entities.TotpSecret>,
     onChange: (String) -> Unit,
 ) {
     val specs = ConnectionProfile.AuthMethodSpec.parseList(specsText)
@@ -2962,6 +2979,35 @@ private fun AuthMethodsEditor(
                         }
                     }
                 }
+                is ConnectionProfile.AuthMethodSpec.Totp -> {
+                    var expanded by remember { mutableStateOf(false) }
+                    Box(modifier = Modifier.weight(1f)) {
+                        OutlinedButton(onClick = { expanded = true }) {
+                            Text(
+                                totpSecrets.firstOrNull { it.id == spec.secretId }?.label
+                                    ?: "Authenticator: any",
+                            )
+                        }
+                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Any authenticator") },
+                                onClick = {
+                                    emit(specs.toMutableList().also { it[index] = ConnectionProfile.AuthMethodSpec.Totp(null) })
+                                    expanded = false
+                                },
+                            )
+                            totpSecrets.forEach { secret ->
+                                DropdownMenuItem(
+                                    text = { Text(secret.label) },
+                                    onClick = {
+                                        emit(specs.toMutableList().also { it[index] = ConnectionProfile.AuthMethodSpec.Totp(secret.id) })
+                                        expanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
             }
             IconButton(onClick = { swap(index, index - 1) }, enabled = index > 0) {
                 Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up")
@@ -2997,6 +3043,10 @@ private fun AuthMethodsEditor(
             DropdownMenuItem(
                 text = { Text("Keyboard-interactive (OTP)") },
                 onClick = { emit(specs + ConnectionProfile.AuthMethodSpec.KeyboardInteractive); addExpanded = false },
+            )
+            DropdownMenuItem(
+                text = { Text("Authenticator code (TOTP)") },
+                onClick = { emit(specs + ConnectionProfile.AuthMethodSpec.Totp(null)); addExpanded = false },
             )
         }
     }

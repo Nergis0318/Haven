@@ -15,6 +15,7 @@ import sh.haven.core.data.db.entities.ProotInstallLog
 import sh.haven.core.data.db.entities.SshKey
 import sh.haven.core.data.db.entities.StepCaConfig
 import sh.haven.core.data.db.entities.SyncProfile
+import sh.haven.core.data.db.entities.TotpSecret
 import sh.haven.core.data.db.entities.TunnelConfig
 import sh.haven.core.data.db.entities.WorkspaceItem
 import sh.haven.core.data.db.entities.WorkspaceProfile
@@ -35,8 +36,9 @@ import sh.haven.core.data.db.entities.WorkspaceProfile
         StepCaConfig::class,
         SyncProfile::class,
         ProotInstallLog::class,
+        TotpSecret::class,
     ],
-    version = 56,
+    version = 57,
     exportSchema = true,
 )
 abstract class HavenDatabase : RoomDatabase() {
@@ -53,6 +55,7 @@ abstract class HavenDatabase : RoomDatabase() {
     abstract fun stepCaConfigDao(): StepCaConfigDao
     abstract fun syncProfileDao(): SyncProfileDao
     abstract fun prootInstallLogDao(): ProotInstallLogDao
+    abstract fun totpSecretDao(): TotpSecretDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -888,6 +891,32 @@ abstract class HavenDatabase : RoomDatabase() {
                     END
                     WHERE `authMethods` = ''
                     """.trimIndent(),
+                )
+            }
+        }
+
+        // #178: OATH-TOTP auto-fill. Adds the totp_secrets table and the
+        // per-profile totpConfirmBeforeSend toggle (0 = auto-submit).
+        val MIGRATION_56_57 = object : Migration(56, 57) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `totp_secrets` (
+                        `id` TEXT NOT NULL,
+                        `label` TEXT NOT NULL,
+                        `secret` TEXT NOT NULL,
+                        `issuer` TEXT,
+                        `accountName` TEXT,
+                        `algorithm` TEXT NOT NULL DEFAULT 'SHA1',
+                        `digits` INTEGER NOT NULL DEFAULT 6,
+                        `periodSeconds` INTEGER NOT NULL DEFAULT 30,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent(),
+                )
+                addColumnIfMissing(
+                    db, "connection_profiles", "totpConfirmBeforeSend", "INTEGER NOT NULL DEFAULT 0",
                 )
             }
         }

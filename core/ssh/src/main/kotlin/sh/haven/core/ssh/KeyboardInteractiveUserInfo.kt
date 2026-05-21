@@ -26,13 +26,23 @@ private const val KI_TAG = "HavenKI"
  * with echo=false, and we already have a saved password for the profile.
  * This matches Gboard-style UX: the user shouldn't have to retype their
  * saved password just because the server routed "Password:" through the
- * keyboard-interactive channel instead of password auth. For two-factor
- * rounds (password + code) the prompter is invoked normally.
+ * keyboard-interactive channel instead of password auth.
+ *
+ * An optional [totpCodeProvider] (#178) generates a live TOTP code on
+ * demand for OTP-looking prompts (echo=false + an OTP keyword). When
+ * every prompt in a round can be auto-answered (password via
+ * [fallbackPassword], OTP via [totpCodeProvider]) and [autoSubmit] is
+ * true, the round is answered without showing any UI. Otherwise the
+ * prompter is invoked with the auto-answers carried in
+ * [KeyboardInteractiveChallenge.prefilled] so the dialog can pre-populate
+ * (the per-profile "confirm OTP before sending" path).
  */
 internal class KeyboardInteractiveUserInfo(
     private val destination: String,
     private val prompter: KeyboardInteractivePrompter,
     private val fallbackPassword: CharArray? = null,
+    private val totpCodeProvider: (() -> String)? = null,
+    private val autoSubmit: Boolean = true,
 ) : UserInfo, UIKeyboardInteractive {
 
     override fun getPassphrase(): String? = null
@@ -66,16 +76,24 @@ internal class KeyboardInteractiveUserInfo(
                 "prompts=${prompts.map { "${it.text}(echo=${it.echo})" }}",
         )
 
-        // Single-prompt password-style round with a saved password: answer
-        // silently and let the user see a dialog only for the things they
-        // actually need to type (TOTP codes, etc.).
-        if (fallbackPassword != null &&
-            prompts.size == 1 &&
-            !prompts[0].echo &&
-            prompts[0].text.contains("password", ignoreCase = true)
-        ) {
-            Log.d(KI_TAG, "  fallback: answering with saved password (len=${fallbackPassword.size})")
-            return arrayOf(String(fallbackPassword))
+        // Compute a per-prompt auto-answer: a saved password for a
+        // password prompt, a freshly generated TOTP code for an
+        // OTP-looking prompt. Generated at this instant so the code is
+        // current for the window the server will validate against.
+        val autoAnswers: List<String?> = prompts.map { p ->
+            when {
+                fallbackPassword != null && !p.echo && p.text.contains("password", ignoreCase = true) ->
+                    String(fallbackPassword)
+                totpCodeProvider != null && looksLikeOtpPrompt(p) -> totpCodeProvider.invoke()
+                else -> null
+            }
+        }
+
+        // Every prompt answerable from stored secrets and auto-submit
+        // enabled: answer the round with no UI at all.
+        if (autoSubmit && prompts.isNotEmpty() && autoAnswers.all { it != null }) {
+            Log.d(KI_TAG, "  auto-answering ${prompts.size} prompt(s) from stored secrets")
+            return autoAnswers.map { it!! }.toTypedArray()
         }
 
         val challenge = KeyboardInteractiveChallenge(
@@ -83,6 +101,9 @@ internal class KeyboardInteractiveUserInfo(
             name = name ?: "",
             instruction = instruction ?: "",
             prompts = prompts,
+            // Carry any partial auto-answers so the dialog pre-fills them
+            // (e.g. the confirm-OTP-before-sending path).
+            prefilled = if (autoAnswers.any { it != null }) autoAnswers else emptyList(),
         )
         Log.d(KI_TAG, "  dispatching to prompter")
         val responses = runBlocking { prompter.prompt(challenge) }
@@ -92,5 +113,26 @@ internal class KeyboardInteractiveUserInfo(
                 "lengths=${responses.map { it.length }}"}",
         )
         return responses?.toTypedArray()
+    }
+
+    /**
+     * Heuristic for "this prompt wants a TOTP / one-time code". PAM OTP
+     * modules (google-authenticator, oath-toolkit, Duo, etc.) phrase the
+     * prompt in varied ways but it's always a masked field. We require
+     * echo=false AND an OTP-ish keyword so a plain "Password:" prompt
+     * isn't answered with a TOTP code by mistake.
+     */
+    private fun looksLikeOtpPrompt(p: KeyboardInteractiveChallenge.Prompt): Boolean {
+        if (p.echo) return false
+        val t = p.text.lowercase()
+        return OTP_KEYWORDS.any { it in t }
+    }
+
+    private companion object {
+        val OTP_KEYWORDS = listOf(
+            "verification code", "one-time", "one time", "otp", "totp",
+            "token", "authenticator", "2fa", "two-factor", "two factor",
+            "code:", "code ", "passcode",
+        )
     }
 }

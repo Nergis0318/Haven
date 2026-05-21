@@ -32,6 +32,7 @@ android {
 dependencies {
     implementation(project(":core:ui"))
     implementation(project(":core:ssh"))
+    implementation(project(":core:security"))
     implementation(project(":core:tunnel"))
     implementation(project(":core:knock"))
     implementation(project(":feature:tunnel"))

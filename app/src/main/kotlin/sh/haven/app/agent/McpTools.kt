@@ -78,6 +78,7 @@ internal class McpTools(
     private val terminalInputQueue: TerminalInputQueue,
     private val prootInstallLogRepository: sh.haven.core.data.repository.ProotInstallLogRepository,
     private val sshKeyRepository: sh.haven.core.data.repository.SshKeyRepository,
+    private val totpSecretRepository: sh.haven.core.data.repository.TotpSecretRepository,
     private val desktopSessionRegistry: sh.haven.core.data.desktop.DesktopSessionRegistry,
     /**
      * The MCP HTTP server's live bound port. Evaluated lazily so the
@@ -1332,6 +1333,57 @@ internal class McpTools(
             },
         ) { args -> deleteSshKey(args) },
 
+        "list_totp_secrets" to ToolHandler(
+            description = "List saved OATH-TOTP authenticator secrets (#178). Returns id, label, issuer, accountName, algorithm, digits, periodSeconds, and createdAt. The base32 secret itself is NEVER returned — it stays encrypted at rest. Reference an id as a `TOTP:<id>` token in create_connection's authMethods to auto-fill the SSH 'Verification code:' prompt.",
+            inputSchema = emptyObjectSchema(),
+        ) { _ -> listTotpSecrets() },
+
+        "create_totp_secret" to ToolHandler(
+            description = "Store an OATH-TOTP secret so it can auto-fill an SSH keyboard-interactive OTP prompt (#178). Pass `otpauth` (an `otpauth://totp/...` URI) OR `secret` (a raw base32 string) plus an optional `label`. Returns the new secret id; reference it via a `TOTP:<id>` token in create_connection's authMethods.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("otpauth", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "An otpauth://totp/Issuer:account?secret=...&... URI. Mutually exclusive with `secret`.")
+                    })
+                    put("secret", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "A raw base32 TOTP secret (SHA1, 6 digits, 30s period assumed). Use `otpauth` instead when you have the full URI.")
+                    })
+                    put("label", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Optional user-facing label. Defaults to the otpauth issuer/account or 'Authenticator'.")
+                    })
+                })
+            },
+            consentLevel = ConsentLevel.EVERY_CALL,
+            summarise = { args ->
+                val l = args.optString("label").ifBlank { "(from otpauth)" }
+                "Store a TOTP authenticator secret \"$l\" in the Haven key store?"
+            },
+        ) { args -> createTotpSecret(args) },
+
+        "delete_totp_secret" to ToolHandler(
+            description = "Delete a saved TOTP secret by id. Profiles referencing it via a TOTP auth element fall through to a manual OTP prompt on next connect. Irreversible.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("totpSecretId", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "TOTP secret id from list_totp_secrets.")
+                    })
+                })
+                put("required", JSONArray().put("totpSecretId"))
+            },
+            consentLevel = ConsentLevel.EVERY_CALL,
+            summarise = { args ->
+                val id = args.optString("totpSecretId")
+                val label = runBlocking { totpSecretRepository.getById(id)?.label } ?: id.take(8) + "…"
+                "Delete TOTP secret \"$label\"? Cannot be undone."
+            },
+        ) { args -> deleteTotpSecret(args) },
+
         "list_tunnels" to ToolHandler(
             description = "List saved WireGuard / Tailscale tunnel configs available for Route-through on connection profiles. Returns id, label, type (WIREGUARD or TAILSCALE), and createdAt for each. The encrypted configText (wg-quick payload or Tailscale authkey blob) is NOT returned.",
             inputSchema = emptyObjectSchema(),
@@ -1484,7 +1536,7 @@ internal class McpTools(
                     put("authMethods", JSONObject().apply {
                         put("type", "array")
                         put("items", JSONObject().apply { put("type", "string") })
-                        put("description", "SSH only (#166): ordered multi-factor auth methods attempted in one connect, for servers requiring a chain like publickey,password. Each element is a token: \"PASSWORD\", \"KEY\" (any saved key), \"KEY:<keyId>\", or \"KEYBOARD_INTERACTIVE\". Omit for the single-method default derived from keyId/password.")
+                        put("description", "SSH only (#166): ordered multi-factor auth methods attempted in one connect, for servers requiring a chain like publickey,password. Each element is a token: \"PASSWORD\", \"KEY\" (any saved key), \"KEY:<keyId>\", \"KEYBOARD_INTERACTIVE\", or \"TOTP:<id>\" (auto-fill an OATH-TOTP code from list_totp_secrets, #178). Omit for the single-method default derived from keyId/password.")
                     })
                     put("portKnockSequence", JSONObject().apply { put("type", "string"); put("description", "Optional port-knock sequence fired before the real connect. Format: whitespace/comma-separated 'port[/proto]' tokens — e.g. '7000 8000 9000' (all TCP) or '7000/tcp 8000/udp 9000/tcp'. Empty = disabled.") })
                     put("portKnockDelayMs", JSONObject().apply { put("type", "integer"); put("description", "Inter-knock delay in ms (default 100). Ignored when portKnockSequence is empty.") })
@@ -3870,6 +3922,71 @@ internal class McpTools(
         val existing = sshKeyRepository.getById(id)
             ?: throw IllegalArgumentException("No SSH key with id $id")
         sshKeyRepository.delete(id)
+        return JSONObject().apply {
+            put("deleted", true)
+            put("id", id)
+            put("label", existing.label)
+        }
+    }
+
+    private suspend fun listTotpSecrets(): JSONObject {
+        val secrets = totpSecretRepository.getAll()
+        val arr = JSONArray()
+        for (s in secrets) {
+            arr.put(JSONObject().apply {
+                put("id", s.id)
+                put("label", s.label)
+                put("issuer", s.issuer ?: JSONObject.NULL)
+                put("accountName", s.accountName ?: JSONObject.NULL)
+                put("algorithm", s.algorithm)
+                put("digits", s.digits)
+                put("periodSeconds", s.periodSeconds)
+                put("createdAt", s.createdAt)
+            })
+        }
+        return JSONObject().apply {
+            put("count", secrets.size)
+            put("secrets", arr)
+        }
+    }
+
+    private suspend fun createTotpSecret(args: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+        val otpauth = args.optString("otpauth").takeIf { it.isNotBlank() }
+        val rawSecret = args.optString("secret").takeIf { it.isNotBlank() }
+        val input = otpauth ?: rawSecret
+            ?: throw IllegalArgumentException("Pass either `otpauth` or `secret`")
+        val parsed = sh.haven.core.security.OtpAuthUri.parse(input)
+            ?: throw IllegalArgumentException("Not a valid otpauth:// URI or base32 secret")
+        val labelOverride = args.optString("label").takeIf { it.isNotBlank() }
+        val entity = sh.haven.core.data.db.entities.TotpSecret(
+            label = labelOverride ?: parsed.label,
+            secret = parsed.secret,
+            issuer = parsed.issuer,
+            accountName = parsed.accountName,
+            algorithm = parsed.algorithm.name,
+            digits = parsed.digits,
+            periodSeconds = parsed.periodSeconds,
+        )
+        totpSecretRepository.save(entity)
+        JSONObject().apply {
+            put("id", entity.id)
+            put("label", entity.label)
+            put("issuer", entity.issuer ?: JSONObject.NULL)
+            put("accountName", entity.accountName ?: JSONObject.NULL)
+            put("algorithm", entity.algorithm)
+            put("digits", entity.digits)
+            put("periodSeconds", entity.periodSeconds)
+            put("authMethodToken", "TOTP:${entity.id}")
+        }
+    }
+
+    private suspend fun deleteTotpSecret(args: JSONObject): JSONObject {
+        val id = args.optString("totpSecretId").ifBlank {
+            throw IllegalArgumentException("totpSecretId required")
+        }
+        val existing = totpSecretRepository.getById(id)
+            ?: throw IllegalArgumentException("No TOTP secret with id $id")
+        totpSecretRepository.delete(id)
         return JSONObject().apply {
             put("deleted", true)
             put("id", id)

@@ -63,6 +63,8 @@ class KeysViewModel @Inject constructor(
     private val stepCaConfigRepository: StepCaConfigRepository,
     private val stepCaSignFlow: StepCaSignFlow,
     private val fidoAuthenticator: sh.haven.core.fido.FidoAuthenticator,
+    private val totpSecretRepository: sh.haven.core.data.repository.TotpSecretRepository,
+    private val barcodeDecoder: sh.haven.core.scan.BarcodeDecoder,
     agentUiCommandBus: AgentUiCommandBus,
 ) : ViewModel() {
 
@@ -631,6 +633,74 @@ class KeysViewModel @Inject constructor(
             refreshTicker.value = System.nanoTime()
             _message.value = "Certificate removed"
         }
+    }
+
+    // ---------- OATH-TOTP secrets (#178) ----------
+
+    val totpSecrets: StateFlow<List<sh.haven.core.data.db.entities.TotpSecret>> =
+        totpSecretRepository.observeAll()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** Add a TOTP secret from a pasted `otpauth://` URI or bare base32 string. */
+    fun addTotpFromText(text: String) {
+        val parsed = sh.haven.core.security.OtpAuthUri.parse(text)
+        if (parsed == null) {
+            _error.value = "Not a valid otpauth:// URI or base32 secret"
+            return
+        }
+        saveTotp(parsed)
+    }
+
+    /** Decode an `otpauth://` QR from a picked image, then store the secret. */
+    fun addTotpFromImage(context: Context, uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val decoded = withContext(Dispatchers.Default) {
+                    val bitmap = context.contentResolver.openInputStream(uri)?.use {
+                        android.graphics.BitmapFactory.decodeStream(it)
+                    } ?: throw IllegalStateException("Could not read image")
+                    barcodeDecoder.decode(bitmap)
+                }
+                if (decoded == null) {
+                    _error.value = "No QR code found in the image"
+                    return@launch
+                }
+                val parsed = sh.haven.core.security.OtpAuthUri.parse(decoded)
+                if (parsed == null) {
+                    _error.value = "QR code is not a TOTP (otpauth://totp) code"
+                    return@launch
+                }
+                saveTotp(parsed)
+            } catch (e: Exception) {
+                Log.e("KeysViewModel", "TOTP QR scan failed", e)
+                _error.value = "Could not scan QR: ${e.message}"
+            }
+        }
+    }
+
+    private fun saveTotp(parsed: sh.haven.core.security.OtpAuthUri.Parsed) {
+        viewModelScope.launch {
+            try {
+                totpSecretRepository.save(
+                    sh.haven.core.data.db.entities.TotpSecret(
+                        label = parsed.label,
+                        secret = parsed.secret,
+                        issuer = parsed.issuer,
+                        accountName = parsed.accountName,
+                        algorithm = parsed.algorithm.name,
+                        digits = parsed.digits,
+                        periodSeconds = parsed.periodSeconds,
+                    ),
+                )
+                _message.value = "Authenticator added: ${parsed.label}"
+            } catch (e: Exception) {
+                _error.value = "Could not save authenticator: ${e.message}"
+            }
+        }
+    }
+
+    fun deleteTotp(id: String) {
+        viewModelScope.launch { totpSecretRepository.delete(id) }
     }
 
     fun showError(msg: String) {

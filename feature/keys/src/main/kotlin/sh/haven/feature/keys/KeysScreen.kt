@@ -34,6 +34,8 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Password
+import androidx.compose.material.icons.filled.Pin
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.TouchApp
@@ -63,6 +65,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,6 +82,9 @@ import sh.haven.core.security.KeystoreEntry
 import sh.haven.core.security.KeystoreFlag
 import sh.haven.core.security.KeystoreStore
 import sh.haven.core.security.SshKeyGenerator
+import sh.haven.core.security.Totp
+import sh.haven.core.data.db.entities.TotpSecret
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -104,6 +110,7 @@ fun KeysScreen(
     var showGenerateDialog by remember { mutableStateOf(false) }
     var showStepCaDialog by remember { mutableStateOf(false) }
     val stepCaConfigs by viewModel.stepCaConfigs.collectAsState()
+    val totpSecrets by viewModel.totpSecrets.collectAsState()
     // CA section ViewModel — separate hilt instance, shared with the
     // section composable inside the LazyColumn. (#133 phase 2b — CA
     // management moved out of Settings into the Keys tab.)
@@ -149,6 +156,13 @@ fun KeysScreen(
         if (uri != null && keyId != null) {
             viewModel.importCertificateFromUri(context, keyId, uri)
         }
+    }
+
+    // TOTP QR scan (#178): pick an image containing an otpauth:// QR code.
+    val totpQrLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri?.let { viewModel.addTotpFromImage(context, it) }
     }
 
     LaunchedEffect(pendingCertKeyId) {
@@ -212,7 +226,7 @@ fun KeysScreen(
         // empty-state hint as an item below the CA section when there
         // are no keys, passwords, or CA configs yet.
         val nothingButCa = keys.isEmpty() && passwordEntries.isEmpty() &&
-            stepCaSectionConfigs.isEmpty() && !generating
+            stepCaSectionConfigs.isEmpty() && totpSecrets.isEmpty() && !generating
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -288,6 +302,15 @@ fun KeysScreen(
                         HorizontalDivider()
                     }
                 }
+            if (totpSecrets.isNotEmpty()) {
+                item(key = "totp-header") {
+                    SectionHeader("Authenticator (TOTP) · ${totpSecrets.size}")
+                }
+                items(totpSecrets, key = { "totp-${it.id}" }) { secret ->
+                    TotpSecretRow(secret = secret, onDelete = { viewModel.deleteTotp(secret.id) })
+                    HorizontalDivider()
+                }
+            }
             item(key = "footer-spacer") { Spacer(Modifier.height(80.dp)) }
         }
     }
@@ -343,6 +366,20 @@ fun KeysScreen(
                     viewModel.startImport(text.toByteArray())
                 }
             },
+            onAddTotpPaste = {
+                showAddKeyDialog = false
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+                if (text.isNullOrBlank()) {
+                    viewModel.showError(clipboardEmptyMsg)
+                } else {
+                    viewModel.addTotpFromText(text)
+                }
+            },
+            onScanTotpQr = {
+                showAddKeyDialog = false
+                totpQrLauncher.launch("image/*")
+            },
             onDismiss = { showAddKeyDialog = false },
         )
     }
@@ -385,6 +422,54 @@ fun KeysScreen(
     }
 }
 
+/**
+ * One stored TOTP secret. Shows the live 6/8-digit code (refreshed each
+ * second) so the user can verify it matches their other authenticator,
+ * plus a delete affordance. (#178)
+ */
+@Composable
+private fun TotpSecretRow(
+    secret: TotpSecret,
+    onDelete: () -> Unit,
+) {
+    val algorithm = remember(secret.algorithm) {
+        runCatching { Totp.Algorithm.valueOf(secret.algorithm) }.getOrDefault(Totp.Algorithm.SHA1)
+    }
+    val code by produceState(initialValue = "•".repeat(secret.digits), secret.id) {
+        while (true) {
+            value = runCatching {
+                Totp.generate(
+                    secretBase32 = secret.secret,
+                    algorithm = algorithm,
+                    digits = secret.digits,
+                    periodSeconds = secret.periodSeconds,
+                )
+            }.getOrDefault("error")
+            delay(1000L)
+        }
+    }
+    val subtitle = listOfNotNull(secret.issuer, secret.accountName).joinToString(" · ")
+    ListItem(
+        headlineContent = { Text(secret.label) },
+        supportingContent = {
+            Column {
+                if (subtitle.isNotBlank()) Text(subtitle)
+                Text(
+                    code,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        },
+        leadingContent = { Icon(Icons.Filled.Pin, contentDescription = null) },
+        trailingContent = {
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete authenticator")
+            }
+        },
+    )
+}
+
 @Composable
 private fun AddKeyChooser(
     stepCaConfigCount: Int,
@@ -393,6 +478,8 @@ private fun AddKeyChooser(
     onImport: () -> Unit,
     onDiscoverFromSecurityKey: () -> Unit,
     onPaste: () -> Unit,
+    onAddTotpPaste: () -> Unit,
+    onScanTotpQr: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -458,6 +545,22 @@ private fun AddKeyChooser(
                     supportingContent = { Text(stringResource(R.string.keys_paste_clipboard_hint)) },
                     leadingContent = {
                         Icon(Icons.Filled.ContentPaste, contentDescription = null)
+                    },
+                )
+                ListItem(
+                    modifier = Modifier.clickable { onScanTotpQr() },
+                    headlineContent = { Text("Scan authenticator QR (TOTP)") },
+                    supportingContent = { Text("Pick an image with an otpauth:// QR code") },
+                    leadingContent = {
+                        Icon(Icons.Filled.QrCodeScanner, contentDescription = null)
+                    },
+                )
+                ListItem(
+                    modifier = Modifier.clickable { onAddTotpPaste() },
+                    headlineContent = { Text("Add authenticator from clipboard (TOTP)") },
+                    supportingContent = { Text("Paste an otpauth:// URI or base32 secret") },
+                    leadingContent = {
+                        Icon(Icons.Filled.Pin, contentDescription = null)
                     },
                 )
             }

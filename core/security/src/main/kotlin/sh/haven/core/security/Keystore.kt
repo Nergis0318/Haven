@@ -14,6 +14,8 @@ enum class KeystoreStore {
     SSH_KEYS,
     /** Per-profile passwords (sshPassword, vncPassword, smbPassword, rdpPassword). */
     PROFILE_CREDENTIALS,
+    /** OATH-TOTP shared secrets backing the `totp_secrets` table (#178). */
+    TOTP_SECRETS,
 }
 
 /**
@@ -28,6 +30,8 @@ enum class KeyKind {
     SSH_FIDO_SK,
     /** A profile password (SSH/VNC/SMB/RDP). Encrypted at rest with [CredentialEncryption]. */
     PROFILE_PASSWORD,
+    /** An OATH-TOTP shared secret (base32). Encrypted at rest with [CredentialEncryption]. */
+    TOTP_SECRET,
 }
 
 /**

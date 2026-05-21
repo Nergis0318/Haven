@@ -142,6 +142,7 @@ class McpServer @Inject constructor(
     private val terminalInputQueue: TerminalInputQueue,
     private val prootInstallLogRepository: sh.haven.core.data.repository.ProotInstallLogRepository,
     private val sshKeyRepository: sh.haven.core.data.repository.SshKeyRepository,
+    private val totpSecretRepository: sh.haven.core.data.repository.TotpSecretRepository,
     private val desktopSessionRegistry: sh.haven.core.data.desktop.DesktopSessionRegistry,
 ) : Closeable {
 
@@ -266,6 +267,7 @@ class McpServer @Inject constructor(
         terminalInputQueue = terminalInputQueue,
         prootInstallLogRepository = prootInstallLogRepository,
         sshKeyRepository = sshKeyRepository,
+        totpSecretRepository = totpSecretRepository,
         desktopSessionRegistry = desktopSessionRegistry,
         mcpPortProvider = { port },
     )

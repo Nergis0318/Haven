@@ -191,6 +191,95 @@ class KeyboardInteractiveUserInfoTest {
     }
 
     @Test
+    fun totpProviderAutoSubmitsLoneOtpPromptWithoutPrompting() {
+        var prompterCalled = false
+        val ui = KeyboardInteractiveUserInfo(
+            destination = "alice@example.com:22",
+            prompter = { prompterCalled = true; listOf("typed") },
+            totpCodeProvider = { "424242" },
+            autoSubmit = true,
+        )
+
+        val result = callOnBackgroundThread {
+            ui.promptKeyboardInteractive(
+                "alice@example.com:22", "Google Authenticator", null,
+                arrayOf("Verification code: "), booleanArrayOf(false),
+            )
+        }
+
+        assertArrayEquals(arrayOf("424242"), result)
+        assertTrue("auto-submit must not surface a dialog", !prompterCalled)
+    }
+
+    @Test
+    fun totpAndPasswordRoundAutoSubmitsBothFromStoredSecrets() {
+        var prompterCalled = false
+        val ui = KeyboardInteractiveUserInfo(
+            destination = "alice@example.com:22",
+            prompter = { prompterCalled = true; null },
+            fallbackPassword = "saved-password".toCharArray(),
+            totpCodeProvider = { "424242" },
+            autoSubmit = true,
+        )
+
+        val result = callOnBackgroundThread {
+            ui.promptKeyboardInteractive(
+                "alice@example.com:22", null, null,
+                arrayOf("Password: ", "Verification code: "),
+                booleanArrayOf(false, false),
+            )
+        }
+
+        assertArrayEquals(arrayOf("saved-password", "424242"), result)
+        assertTrue("a fully-answerable round must not prompt", !prompterCalled)
+    }
+
+    @Test
+    fun confirmOtpPrefillsTheDialogInsteadOfAutoSubmitting() {
+        var seen: KeyboardInteractiveChallenge? = null
+        val ui = KeyboardInteractiveUserInfo(
+            destination = "alice@example.com:22",
+            prompter = { challenge -> seen = challenge; listOf("424242") },
+            totpCodeProvider = { "424242" },
+            autoSubmit = false,
+        )
+
+        val result = callOnBackgroundThread {
+            ui.promptKeyboardInteractive(
+                "alice@example.com:22", null, null,
+                arrayOf("Verification code: "), booleanArrayOf(false),
+            )
+        }
+
+        assertArrayEquals(arrayOf("424242"), result)
+        assertNotNull("confirm-OTP must reach the dialog", seen)
+        assertEquals(listOf("424242"), seen!!.prefilled)
+    }
+
+    @Test
+    fun totpProviderIsNotUsedForEchoedOrNonOtpPrompts() {
+        var seen: KeyboardInteractiveChallenge? = null
+        val ui = KeyboardInteractiveUserInfo(
+            destination = "alice@example.com:22",
+            prompter = { challenge -> seen = challenge; listOf("typed") },
+            totpCodeProvider = { "424242" },
+            autoSubmit = true,
+        )
+
+        // An echo=true prompt is not a code field — must reach the dialog,
+        // with no pre-fill.
+        callOnBackgroundThread {
+            ui.promptKeyboardInteractive(
+                "alice@example.com:22", null, null,
+                arrayOf("Answer the security question: "), booleanArrayOf(true),
+            )
+        }
+
+        assertNotNull(seen)
+        assertTrue("non-OTP prompt must not be pre-filled", seen!!.prefilled.isEmpty())
+    }
+
+    @Test
     fun userInfoMethodsNoOp() {
         val ui = KeyboardInteractiveUserInfo(
             destination = "",

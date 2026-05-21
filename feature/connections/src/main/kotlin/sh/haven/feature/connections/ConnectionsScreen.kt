@@ -168,6 +168,7 @@ fun ConnectionsScreen(
     val connections by viewModel.connections.collectAsState()
     val groups by viewModel.groups.collectAsState()
     val sshKeys by viewModel.sshKeys.collectAsState()
+    val totpSecrets by viewModel.totpSecrets.collectAsState()
     val tunnelConfigs by viewModel.tunnelConfigs.collectAsState()
     var showTunnelsScreen by remember { mutableStateOf(false) }
     // When the user picks "+ New WireGuard tunnel" from a profile's
@@ -439,6 +440,7 @@ fun ConnectionsScreen(
             sshProfiles = connections,
             groups = groups,
             sshKeys = sshKeys,
+            totpSecrets = totpSecrets,
             tunnelConfigs = tunnelConfigs,
             onManageTunnels = { preselect ->
                 pendingTunnelAddType = preselect
@@ -559,6 +561,7 @@ fun ConnectionsScreen(
             sshProfiles = connections,
             groups = groups,
             sshKeys = sshKeys,
+            totpSecrets = totpSecrets,
             tunnelConfigs = tunnelConfigs,
             embeddedCloudflareTunnel = embeddedCf.value,
             mcpReverseTunnelEnabled = mcpReverseTunnel.value,
