@@ -31,15 +31,20 @@ Remote desktop viewer with RFB 3.8 protocol support. Pinch-to-zoom, two-finger p
 
 ## Native Wayland Desktop
 
-GPU-accelerated Wayland compositor (labwc) running natively inside Haven. Full interactive terminal with keyboard input, mouse interaction, server-side window decorations, pinch-to-zoom, and fullscreen mode with corner overlay menu. The GPU pipeline renders via GLES2 on the device's GPU (AHardwareBuffer allocator, ASurfaceControl zero-copy presentation). Native Wayland clients can render 3D content — includes a built-in GLES2 benchmark (rotating lit cube at 60fps on Mali-G715). Configurable shell (/bin/sh, bash, zsh, fish) and shared keyboard toolbar (Esc, Tab, Ctrl, Alt, arrows, function keys). External Wayland clients can connect via Shizuku (symlinks the socket to `/data/local/tmp/haven-wayland/`). No root required — runs in PRoot with an Alpine Linux rootfs.
+GPU-accelerated Wayland compositor (labwc) running natively inside Haven. Full interactive terminal with keyboard input, mouse interaction, server-side window decorations, pinch-to-zoom, and fullscreen mode with corner overlay menu. The GPU pipeline renders via GLES2 on the device's GPU (AHardwareBuffer allocator, ASurfaceControl zero-copy presentation). Native Wayland clients can render 3D content — includes a built-in GLES2 benchmark (rotating lit cube at 60fps on Mali-G715). **Display-scale / resolution control** — pick the compositor's output resolution from the toolbar or fullscreen menu; it reflows windows at the new resolution rather than just visually zooming. Configurable shell (/bin/sh, bash, zsh, fish) and shared keyboard toolbar (Esc, Tab, Ctrl, Alt, arrows, function keys, plus a Super/Mod4 key for compositor keybinds). External Wayland clients can connect via Shizuku (symlinks the socket to `/data/local/tmp/haven-wayland/`). No root required — runs in PRoot with an Alpine Linux rootfs.
 
-## Local Desktop (X11)
+## Local Desktops (multi-distro manager)
 
-One-tap desktop running on-device via PRoot. Choose from Xfce4 or Openbox with X11/Xvnc. For Wayland, use the Native Wayland Desktop above.
+A **Desktop → Manage** view installs and runs full Linux desktops on-device via PRoot, with no root. Pick a distro — **Alpine** (APK), **Debian 12** (APT), **Arch Linux ARM** (PACMAN), or **Void** (XBPS) — and install them side-by-side; each carries its native package manager. For each installed distro you can install, start, and stop desktop environments, open a shell into it, and read a Room-backed install log that names the layer that broke if a package install fails.
+
+Desktop environments:
+
+- **X11 (via Xvnc)** — Xfce4 or Openbox, each on its own VNC port, viewed through the in-app VNC client.
+- **Nested Wayland (via wayvnc)** — a headless wlroots compositor inside the rootfs, surfaced over VNC. **Sway** is the supported, working option. Hyprland and niri are offered but GPU-limited: their renderers (aquamarine / smithay) are GLES-only with no software fallback, and the Android GPU isn't driveable by Mesa inside PRoot, so they can't currently initialise a backend (tracked on #162). For a GPU-accelerated local desktop, use the Native Wayland Desktop above.
 
 ## Desktop (RDP)
 
-Remote Desktop Protocol client built on [IronRDP](https://github.com/Devolutions/IronRDP) via UniFFI Kotlin bindings. Connects to Windows Remote Desktop, xrdp (Linux), and GNOME Remote Desktop. Pinch-to-zoom, pan, keyboard with scancode mapping, mouse input. SSH tunnel support with auto-connect through saved SSH profiles. Saved connection profiles with optional stored password.
+Remote Desktop Protocol client built on [IronRDP](https://github.com/Devolutions/IronRDP) via UniFFI Kotlin bindings. Connects to Windows Remote Desktop, xrdp (Linux), and GNOME Remote Desktop. **EGFX (MS-RDPEGFX) graphics-pipeline support** — ClearCodec and RemoteFX Progressive decoders light up the fast graphics path on modern Windows (verified against Windows Server 2025), with a slow-path fallback for servers that don't negotiate it. Pinch-to-zoom, pan, keyboard with scancode mapping, mouse input. SSH tunnel support with auto-connect through saved SSH profiles. Saved connection profiles with optional stored password.
 
 ## Files
 
@@ -71,7 +76,7 @@ Optional per-profile knock sequence sent immediately before the real socket open
 
 ## Local Shell (PRoot)
 
-Run a real Linux terminal directly on your phone, no root required. Select "Local Shell (PRoot)" when creating a connection and Haven downloads a minimal [Alpine Linux](https://alpinelinux.org/) rootfs (~4 MB) on first use. From there you have a full `apk` package manager — install Python, Node.js, git, build tools, or anything in Alpine's [package repository](https://pkgs.alpinelinux.org/packages).
+Run a real Linux terminal directly on your phone, no root required. Select "Local Shell (PRoot)" when creating a connection and Haven downloads a minimal [Alpine Linux](https://alpinelinux.org/) rootfs (~4 MB) on first use, giving you a full `apk` package manager — install Python, Node.js, git, build tools, or anything in Alpine's [package repository](https://pkgs.alpinelinux.org/packages). Beyond Alpine, the Desktop → Manage view can install **Debian 12** (`apt`), **Arch Linux ARM** (`pacman`), and **Void** (`xbps`) rootfs side-by-side, each with its own package manager and a one-tap shell.
 
 PRoot works by intercepting system calls in userspace (no kernel modifications), so it runs on **any unrooted Android device**. It does not require or use root access — the name "PRoot" stands for "ptrace-based root", meaning it *emulates* a root filesystem without actual superuser privileges. Think of it as a lightweight container that runs entirely within Haven's app sandbox.
 
@@ -86,6 +91,10 @@ See [PRoot documentation](https://proot-me.github.io/) for technical details.
 ## Reticulum
 
 Connect over [Reticulum](https://reticulum.network) mesh networks with native Kotlin transport (reticulum-kt + rnsh-kt). Two-way terminal sessions over IFAC-protected TCP gateways, announce-based rnsh node discovery via scan button, configurable IFAC network name and passphrase. No Python runtime or Chaquopy dependency — pure Kotlin implementation with Flow-based I/O.
+
+## Agent transport (MCP)
+
+An optional local-loopback **MCP** (Model Context Protocol) server exposes Haven's read and write surfaces as tools, so an AI agent can drive the same primitives a human taps — and the user watches every action happen in the same UI. Disabled by default; toggled under **Settings → Agent endpoint**. ~80 tools span connections and sessions, the unified file browser, terminal I/O, media convert/stream, port forwards and tunnels, rclone sync, and the full multi-distro PRoot + desktop lifecycle (`install_distro`, `install_desktop`, `start_desktop`, `read_desktop_log`, …). Every write action surfaces a non-skippable consent prompt before it runs, and every call is recorded to an in-app audit log. The endpoint binds loopback only; a one-tap "Tunnel through SSH profile…" shortcut adds a reverse forward so an MCP client on your workstation reaches Haven over an existing SSH session.
 
 ## Security
 

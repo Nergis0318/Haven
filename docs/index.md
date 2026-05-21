@@ -49,12 +49,12 @@ Both builds are identical. Minimum Android 8.0 (API 26).
 ## At a glance
 
 - **Terminal** — Mosh, Eternal Terminal, and SSH sessions with tmux/zellij/screen session restore, configurable keyboard toolbar, and OSC 52 / 8 / 9 / 777 / 7 / 133 integration.
-- **Desktop** — VNC (RFB 3.8 with VeNCrypt), RDP (via IronRDP), a native Wayland compositor (labwc on GLES2), and one-tap local X11 desktop via PRoot.
+- **Desktop** — VNC (RFB 3.8 with VeNCrypt), RDP (via IronRDP, with EGFX graphics pipeline), a GPU-accelerated native Wayland compositor (labwc on GLES2), and a multi-distro local-desktop manager (Alpine/Debian/Arch/Void, with Xfce4/Openbox X11 and Sway nested-Wayland desktops).
 - **Files** — Unified browser for SFTP/SCP, SMB, and 60+ cloud providers (rclone). Multi-select, built-in text editor, image tools, chmod, cross-filesystem copy/move, USB SD card roots.
 - **Media** — Transcode and stream on-device with FFmpeg 8.0. HLS streaming to the LAN; DLNA server for cloud media.
 - **Keys** — On-device Ed25519 / RSA / ECDSA generation, FIDO2/SK hardware keys (NFC + USB), deploy-key helper.
 - **Connections** — Host-key TOFU, port forwarding (-L / -R / -D / -J), SOCKS / HTTP proxies, Tor, ProxyJump, **per-app WireGuard and Tailscale tunnels** (userspace, no system VPN slot).
-- **Local shell** — Alpine Linux via PRoot, no root required.
+- **Local shell** — Alpine, Debian, Arch, or Void via PRoot, side-by-side, no root required.
 - **Reticulum** — `rnsh` over Reticulum mesh networks, pure Kotlin.
 - **Security** — Biometric lock, no telemetry, encrypted backup/restore (AES-256-GCM).
 

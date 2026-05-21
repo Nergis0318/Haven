@@ -19,6 +19,7 @@
 ### Wayland Desktop
 - [x] **Desktop addons** — install and launch GUI apps within the Wayland compositor
 - [x] **GTK Wayland preference** — GTK apps use Wayland backend by default
+- [x] **Display-scale / resolution control** — pick the labwc-native compositor's output resolution (reflows windows, not just a visual zoom) from the toolbar / fullscreen menu (#161)
 
 ### Connections
 - [x] **Import SSH keys** — PEM/OpenSSH/PuTTY PPK format with passphrase support
@@ -51,13 +52,13 @@
 ### Remote Desktop
 - [x] **VNC viewer** — embedded VNC client over SSH port forwarding
 - [x] **VNC VeNCrypt** — RFB security type 19 with TLSPlain/X509Plain/TLSVnc/X509Vnc/TLSNone/X509None/Plain sub-types; connects to wayvnc, TigerVNC, libvncserver, x11vnc with username + password over TLS
-- [x] **RDP** — Windows remote desktop via IronRDP (Rust/UniFFI)
-- [x] **Local Xfce desktop** — PRoot VNC desktop environment
+- [x] **RDP** — Windows remote desktop via IronRDP (Rust/UniFFI), with **EGFX** graphics-pipeline support (ClearCodec + RemoteFX Progressive), verified against Windows Server 2025 (#106, #109)
 
 ### File Transfer
 - [x] **SFTP browser** — full file browser with upload/download/open
 - [x] **SMB/CIFS** — Windows file share browsing
 - [x] **DocumentsProvider** — expose SFTP as Android storage provider
+- [x] **rclone folder sync** — copy / mirror / move between remotes with include/exclude filters, size limits, bandwidth throttling, and dry-run preview; saved, reusable sync profiles; errors persisted to the connection log (#157, #158, #159)
 
 ### Media tools
 - [x] **ffmpeg integration** — custom FFmpeg 8.0 build (full codec/format/filter set) wired into the file browser. Long-press any media file to convert; works on local, SFTP, SMB, and rclone. Container + video + audio encoder dropdowns with copy-remux defaults. Frame preview with filter live-update, fullscreen view, and seek slider. Audio preview (5-second playback with filters applied). Video filters (brightness, contrast, saturation, gamma, sharpen, denoise, deshake, auto color, speed, rotation) and audio filters (volume, EBU R128 normalize). "Save to" picker: Downloads or back to source folder with upload progress.
@@ -67,14 +68,15 @@
 - [x] **DLNA server** — stream cloud media to smart TVs and Chromecast on the local network (via rclone's built-in DLNA serve).
 
 ### PRoot / Local
-- [x] **Local Alpine Linux terminal** — PRoot-based local shell
-- [x] **Desktop environment setup** — one-tap Xfce4 + VNC installation
+- [x] **Local Linux terminal (multi-distro)** — PRoot-based local shell with Alpine, Debian 12, Arch Linux ARM, and Void installable side-by-side (APK/APT/PACMAN/XBPS), switchable from the Desktop → Manage view
+- [x] **Local-desktop manager** — per-distro install/start/stop of desktop environments with a Room-backed install log that names the failing layer; one-tap "Open shell" into any installed distro
+- [x] **X11 desktops** — one-tap Xfce4 or Openbox via Xvnc, per-DE VNC port
+- [x] **Nested Wayland desktops** — headless wlroots compositor (Sway) inside the rootfs, surfaced via wayvnc on the VNC client (Hyprland/niri offered but GPU-limited in proot — see #162)
 
 ## Near-term
 
 ### Cloud & file sync
-- [ ] **rclone sync** — one-tap folder sync between remotes (local ↔ cloud, cloud ↔ cloud) from the file browser, with progress and conflict resolution
-- [ ] **rclone bisync** — two-way sync with change detection for keeping folders in lockstep
+- [ ] **rclone bisync** — two-way sync with change detection for keeping folders in lockstep (one-way copy / mirror / move already shipped — see Completed)
 
 ### Media tools (further work)
 - [ ] **AV1 decoder (libdav1d)** — add AV1 decoding support to the bundled ffmpeg so the next class of modern files (YouTube / new cameras) decodes without falling back to native Android MediaCodec

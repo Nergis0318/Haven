@@ -18,7 +18,7 @@ A coherent OS abstraction reduces to three things: a place to keep stuff, a plac
 
 ### 1. Namespace — one filesystem across the universe
 
-The file browser is the **unified namespace**. Local storage, SFTP, SMB, 60+ cloud providers via rclone, and a PRoot-mounted Alpine rootfs are all surfaced as tabs in the same UI, with the same operations: copy, move, rename, delete, open, stream, convert, share. Cross-filesystem copy/move is a first-class operation — drag a file from Google Drive into an SFTP server and it goes through Haven without a local round-trip if the backends support it.
+The file browser is the **unified namespace**. Local storage, SFTP, SMB, 60+ cloud providers via rclone, and PRoot-mounted Linux rootfs (Alpine / Debian / Arch / Void) are all surfaced as tabs in the same UI, with the same operations: copy, move, rename, delete, open, stream, convert, share. Cross-filesystem copy/move is a first-class operation — drag a file from Google Drive into an SFTP server and it goes through Haven without a local round-trip if the backends support it.
 
 Where files live is an implementation detail. Actions — convert, encrypt, stream, share — apply wherever the file is, not only to local copies. Rclone's HTTP serve + Range requests mean a 5 GB cloud file can be transcoded, previewed, and streamed without ever touching the phone's disk.
 
@@ -26,10 +26,10 @@ Where files live is an implementation detail. Actions — convert, encrypt, stre
 
 The **runtime** is the place you actually run things. Haven exposes four kinds:
 
-- **Local shell** — a full Alpine Linux userland on the phone via PRoot, with a package manager and dev tools. Anything that runs on Linux arm64 — language runtimes, build toolchains, AI/agent CLIs, ad-hoc scripts — runs here without Haven knowing or caring what it is.
+- **Local shell** — a full Linux userland on the phone via PRoot — Alpine, Debian, Arch, or Void, installed side-by-side, each with its native package manager and dev tools. Anything that runs on Linux arm64 — language runtimes, build toolchains, AI/agent CLIs, ad-hoc scripts — runs here without Haven knowing or caring what it is.
 - **Remote shell** — SSH, Mosh, Eternal Terminal, and Reticulum transports, with session persistence via tmux/zellij/screen, auto-reconnect, session restore, and a color-coded tabbed terminal that treats all four the same way.
-- **Remote desktop** — VNC (with VeNCrypt/TLS), RDP (via IronRDP), tunneled through SSH when you want the wire encrypted.
-- **Local desktop** — a native GPU-accelerated Wayland compositor (labwc/wlroots) running in Haven's own process, GLES2-composited via AHardwareBuffer. A real Linux desktop on the phone, distinct from any remote screen.
+- **Remote desktop** — VNC (with VeNCrypt/TLS), RDP (via IronRDP, with EGFX graphics-pipeline support), tunneled through SSH when you want the wire encrypted.
+- **Local desktop** — two flavours, both running on-device. A native GPU-accelerated Wayland compositor (labwc/wlroots) in Haven's own process, GLES2-composited via AHardwareBuffer; and a multi-distro desktop manager that installs and runs full X11 (Xfce4 / Openbox) or nested-Wayland (Sway) environments inside a PRoot rootfs and surfaces them through the in-app VNC client. A real Linux desktop on the phone, distinct from any remote screen.
 
 All four are runtimes in the OS sense: processes with input, output, a filesystem, and a network. Haven's job is to make switching between them feel like switching between terminal tabs on a desktop OS.
 
@@ -126,7 +126,7 @@ The thesis is clear; the work is making it feel seamless. Priorities are ordered
 A growth plan needs a diagnosis. Mapped onto the three primitives and the seams between them, Haven currently looks like this:
 
 - **Heart — local-tier namespace (SSH, SFTP, rclone): three organs, one operation code path.** SSH and SFTP share a JSch session per profile (`SshSessionManager.SessionState` reuses the SSH client and exposes `sftpChannel` alongside the shell channel). Rclone, SFTP, SMB and the local backend now route through one `FileBackend` interface (`#126` stages 1-3) for list/delete/mkdir/rename/readBytes/writeBytes — a new universal action (encrypt, inspect, hash) now lights up every tab at once. The remaining heart work is feature-shaped (universal actions, ffmpeg-with-libssh for SFTP/SMB streaming) rather than refactor-shaped.
-- **Shoulders — VNC, RDP, SMB, i18n: exercising well.** Tunnel-aware protocols open SSH port-forwards on demand and a `tunnelDependents` set tears the shared tunnel down cleanly when the last consumer leaves (`#121`). VNC and RDP now share a `RemoteDesktopSession` abstraction (`#128`). Localisation reaches ten locales with the lint-warning safety net (`#125`). Work here is reach (EGFX completion, more codecs, per-locale changelogs) rather than missing seams.
+- **Shoulders — VNC, RDP, SMB, i18n: exercising well.** Tunnel-aware protocols open SSH port-forwards on demand and a `tunnelDependents` set tears the shared tunnel down cleanly when the last consumer leaves (`#121`). VNC and RDP now share a `RemoteDesktopSession` abstraction (`#128`). Localisation reaches twelve locales with the lint-warning safety net (`#125`). EGFX (ClearCodec + RemoteFX Progressive) shipped (v5.24.69) and is verified against Windows Server 2025; the remaining reach is GNOME Remote Desktop interop (it needs server-redirection following, #117), more codecs, and per-locale changelogs rather than missing seams.
 - **Extremities — Reticulum: cold.** `ReticulumTransport` returns only an `RnshShellSession`. No SFTP-over-Reticulum, no tunnelable port, no file sync. Warming the extremity means giving Reticulum the same surface area SSH already has, not a parallel one — and is now the *only* transport in the registry that doesn't carry its weight.
 - **Smile — MCP: opinionated.** Per-backend tools collapsed into one tool with a backend argument (`#127`). Cross-tab verbs landed against `AgentUiCommandBus` (`navigate_sftp_browser`, `focus_terminal_session`, `open_convert_dialog_with_args`). And **the first cross-protocol verb shipped: `compose_workspace`** — opens an entire workspace (terminal + file-browser + desktop + Wayland items) in one call, dispatching through the same `WorkspaceLauncher` the user's tap drives. No single-purpose client has the substrate to compose those primitives in one verb; this is the moat. Two candidate cross-protocol verbs remain (`mirror_directory_with_fallback`, `move_session`) but the moat exists.
 
@@ -158,10 +158,10 @@ Whenever two primitives meet, there should be zero friction. Current gaps:
 - ✅ **rclone fused into shared operation code** — done via `FileBackend` (`#126`). All four backends route through one operation interface; new universal actions land once.
 - **Reticulum carrying more than shell** — today `ReticulumTransport` returns only `RnshShellSession`. SFTP-over-Reticulum and Reticulum-as-tunnelable-port are the moves that turn the extremity into a working limb. The Reticulum mesh is the only transport in Haven that survives full internet loss, so anything load-bearing routed through it is a unique capability, not a duplicate path.
 
-### 1a. Agent transport — shipped (v5.24.81)
+### 1a. Agent transport — shipped (v5.24.81), since broadened
 
 The shared-viewport idea is now a concrete transport. Haven's local
-loopback MCP server exposes 18 tools across read and write paths, and
+loopback MCP server exposes ~80 tools across read and write paths, and
 every non-read call surfaces a non-skippable bottom-sheet consent
 prompt before the action runs. What landed:
 
@@ -169,13 +169,14 @@ prompt before the action runs. What landed:
 - **State inspection tools** (no prompt) — `list_connections`, `list_sessions`, `list_directory` (one tool, backend arg), `stream_sftp_file`, `read_terminal_scrollback`, `play_file`, `get_app_info`, `list_rclone_remotes`, `stop_stream`.
 - **Action tools** (per-action consent) — `open_local_shell`, `send_terminal_input`, `add_port_forward`, `remove_port_forward`, `upload_file`, `delete_file`, `disconnect_profile`, `convert_file`, `set_terminal_font_from_url`, `open_developer_settings`, `enable_wireless_adb` (Shizuku-gated), `install_apk_from_url`.
 - **Cross-tab UI verbs** (against `AgentUiCommandBus`) — `navigate_sftp_browser`, `focus_terminal_session`, `open_convert_dialog_with_args`. Direct demonstration that humans tap, agents call, both observe.
+- **Local-desktop / PRoot lifecycle** (added since) — `list_distros`, `install_distro`, `delete_distro`, `list_desktop_environments`, `install_desktop`, `uninstall_desktop`, `start_desktop`, `stop_desktop`, `read_desktop_log`, `inspect_proot`, `get_proot_install_log`, `list_desktop_sessions`. Drives the whole multi-distro proot + desktop pipeline over MCP, so integration tests run agent-side instead of by hand.
+- **rclone sync + tunnels** (added since) — `start_rclone_sync`, `save_sync_profile`, `get_rclone_sync_status`, `list_live_tunnels`, `create_tunnel`, and peers.
 - **Audit and consent** — `AgentConsentManager` with foreground fail-closed semantics; `AgentAuditRecorder` writes every call to a Room table with redacted args; in-app "agent active" chip on the Connections top bar lights up on recent activity; `AgentActivityScreen` is the dashboard.
 - **Discovery** — Settings exposes the endpoint URL, an MCP-config JSON snippet, and a "Tunnel through SSH profile…" shortcut that adds a `-R 8730` rule on the chosen profile so a remote MCP client reaches Haven via `localhost` through the existing SSH session.
 
 What's still ahead in this lane:
 
-- **`connect_profile`** — the one deferred verb. Lifting `ConnectionsViewModel.connectSshSilent` into a singleton needs the FIDO / jump-host / verbose-logger plumbing untangled. Best done after the SSH-proto migration (#58) settles.
-- **More cross-tab agent verbs** — the bus pattern is proven; remaining surfaces (port-forward dialog with args, connection-edit dialog, key-deploy flow) are mechanical extensions.
+- **More cross-tab agent verbs** — the bus pattern is proven; remaining surfaces (port-forward dialog with args, connection-edit dialog, key-deploy flow) are mechanical extensions. (`connect_profile`, once the one deferred verb, has since shipped.)
 - **MCP `resources/*` capability** — file-shaped resources for "what's on the screen right now" so an agent can pull a snapshot without polling.
 
 ### 1b. MCP as a bidirectional protocol — Haven as host *and* client
@@ -212,10 +213,10 @@ The local PRoot rootfs is the differentiator nobody else ships. It's where an ag
 
 ### 4. The Wayland desktop — a second runtime
 
-Haven's native Wayland compositor is the most technically differentiated piece of work. Now that keyboard, GPU, and window management are shipped, the next step is populating it:
+Haven's native Wayland compositor is the most technically differentiated piece of work. Keyboard, GPU, window management, and virgl GL passthrough are shipped, and the multi-distro desktop manager adds a complementary path: full window-managed environments (Sway via wayvnc, plus X11 Xfce4/Openbox) running inside any installed rootfs. Remaining work:
 
-- **Multiple windows** — launch additional Wayland clients concurrently.
-- **GL client passthrough** — virgl/venus so GPU-accelerated apps in PRoot render natively.
+- **Wider nested-compositor support** — Sway (wlroots/pixman) runs headless in PRoot; GLES-only compositors (Hyprland/aquamarine, niri/smithay) can't initialise a backend there because the Android GPU isn't driveable by Mesa in proot — they're offered but GPU-limited (tracked on #162). A working software/virgl GL path for the nested case is the unlock.
+- **GL client passthrough** — virgl ships for labwc-native; venus/Vulkan is the next layer.
 - **Standalone socket** — let external clients (Termux, chroot, foreign runtimes) connect.
 
 ### 5. Network resilience and security as brand
