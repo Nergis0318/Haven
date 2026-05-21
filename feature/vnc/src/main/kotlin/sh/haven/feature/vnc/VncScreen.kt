@@ -784,11 +784,18 @@ private fun VncViewer(
                 },
         )
 
-        // VNC key extension rows — hidden in fullscreen, and also hidden when
-        // the soft keyboard isn't visible (keyboard-extension rows shouldn't
-        // eat screen space when there's no keyboard to extend).
+        // VNC key extension rows (incl. the Super/Mod4 key, #171). Shown
+        // when the user has toggled the keyboard on (keyboardVisible) OR the
+        // soft keyboard's insets are actually present (imeVisible). Gating on
+        // the explicit toggle — not imeVisible alone — is what makes the
+        // persistent keyboard button a reliable way to reach Super on a
+        // nested-Wayland desktop, where the IME may not raise (or report
+        // insets) the way it does over a focused text field (#171). Still
+        // hidden by default so the rows don't eat screen space unsummoned;
+        // allowed in fullscreen too, since the immersive desktop is exactly
+        // where the compositor keybinds (Super+D / Super+Return) are needed.
         val imeVisible = WindowInsets.isImeVisible
-        if (!fullscreen && imeVisible) {
+        if (keyboardVisible || imeVisible) {
             VncKeyToolbar(
                 layout = toolbarLayout,
                 ctrlActive = ctrlActive,

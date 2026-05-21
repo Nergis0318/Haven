@@ -67,8 +67,12 @@ rexec() {
 # ---------------------------------------------------------------
 [ -f "$HOME/.profile.local" ] && . "$HOME/.profile.local"
 
-# One-line welcome the first time you log in
+# One-line welcome the first time you log in. Name the actual distro
+# (this same profile ships to Alpine/Debian/Arch/Void) rather than
+# always saying "Alpine" (#168).
 if [ -t 1 ] && [ -z "${HAVEN_PROOT_WELCOMED:-}" ]; then
-    echo "Alpine $(uname -m) in Haven PRoot. See ~/README.md for what's here."
+    _haven_distro=$(. /etc/os-release 2>/dev/null; echo "${NAME:-Linux}")
+    echo "$_haven_distro $(uname -m) in Haven PRoot. See ~/README.md for what's here."
+    unset _haven_distro
     export HAVEN_PROOT_WELCOMED=1
 fi
