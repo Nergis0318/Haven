@@ -8,8 +8,12 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxSize
@@ -718,6 +722,17 @@ fun HavenNavHost(
                         modifier = Modifier.fillMaxHeight(),
                     ) {
                         val currentScreen = screens.getOrNull(pagerState.currentPage)
+                        // Scrollable so the items never clip off the bottom on
+                        // short landscape heights — a plain NavigationRail
+                        // centres its items and silently cuts off the last ones
+                        // when they don't all fit, which reads as "a tab is
+                        // gone" (cf. issue #179's auto-hide confusion).
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
                         navScreens.forEach { screen ->
                             val pageIndex = screens.indexOf(screen)
                             if (pageIndex >= 0) {
@@ -740,6 +755,7 @@ fun HavenNavHost(
                                     },
                                 )
                             }
+                        }
                         }
                     }
                 }
