@@ -23,7 +23,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,10 +90,32 @@ internal class ConsentHostViewModel @Inject constructor(
 @Composable
 internal fun ConsentHost(viewModel: ConsentHostViewModel = hiltViewModel()) {
     val pending by viewModel.pending.collectAsStateWithLifecycle()
-    val current = pending.firstOrNull() ?: return
+    val upstream = pending.firstOrNull()
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val scope = rememberCoroutineScope()
+
+    // Render against a locally-held snapshot rather than `upstream`
+    // directly. When a request resolves or times out the manager clears it
+    // from `pending`; removing the ModalBottomSheet from composition the
+    // instant that happens tears its modal window down mid-animation and
+    // leaves an invisible full-screen scrim that swallows ALL touch input
+    // until the process is killed — the "UI frozen after a consent timeout"
+    // bug, which also makes a subsequent Allow look like it never
+    // registered (so the sheet reappears on the next resume). Instead we
+    // keep the sheet composed and animate it out via sheetState.hide(),
+    // dropping the snapshot only once the sheet is actually gone.
+    var displayed by remember { mutableStateOf<ConsentRequest?>(null) }
+    LaunchedEffect(upstream) {
+        val u = upstream
+        if (u != null) {
+            displayed = u
+            if (!sheetState.isVisible) sheetState.show()
+        } else if (displayed != null) {
+            runCatching { sheetState.hide() }
+            displayed = null
+        }
+    }
+    val current = displayed ?: return
 
     val isPairing = current.toolName == AgentConsentManager.PAIRING_TOOL_NAME
     val clientHint = current.clientHint?.takeIf { it.isNotBlank() }
@@ -113,10 +134,11 @@ internal fun ConsentHost(viewModel: ConsentHostViewModel = hiltViewModel()) {
     fun resolve(decision: ConsentDecision, allowForMinutes: Int? = null) {
         val bypass = canOfferBypass && bypassChecked && decision == ConsentDecision.ALLOW
         viewModel.respond(current.id, decision, bypass, allowForMinutes)
-        scope.launch { sheetState.hide() }
+        // respond() clears the request from `pending`; the sync LaunchedEffect
+        // above then animates the sheet out and tears its window down cleanly.
+        // Don't call sheetState.hide() here too — a manual hide racing the
+        // composition removal is what left the stuck input scrim behind.
     }
-
-    LaunchedEffect(current.id) { sheetState.show() }
 
     ModalBottomSheet(
         onDismissRequest = { resolve(ConsentDecision.DENY) },
