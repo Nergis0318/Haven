@@ -1138,6 +1138,20 @@ class ProotManager @Inject constructor(
      * Returns (stdout+stderr, exitCode).
      */
     suspend fun runCommandInProot(command: String): Pair<String, Int> = withContext(Dispatchers.IO) {
+        val process = startCommandInProot(command)
+        val output = process.inputStream.bufferedReader().readText()
+        val exitCode = process.waitFor()
+        Pair(output, exitCode)
+    }
+
+    /**
+     * Build and start a PRoot process running [command] in the active
+     * rootfs, with combined stdout+stderr on the returned Process's
+     * inputStream. Callers that need to stream output incrementally (a
+     * long apt install surfaced through an async MCP job) read the stream
+     * themselves; [runCommandInProot] is the read-to-completion wrapper.
+     */
+    fun startCommandInProot(command: String): Process {
         val prootBin = prootBinary ?: throw IllegalStateException("PRoot not available")
         val loaderPath = File(context.applicationInfo.nativeLibraryDir, "libproot_loader.so").absolutePath
         // Mirror termux/proot-distro v4.29.0's `run_proot_cmd` invocation
@@ -1203,7 +1217,7 @@ class ProotManager @Inject constructor(
             "TMPDIR=/tmp",
             "/bin/sh", "-lc", command,
         )
-        val process = ProcessBuilder(args).apply {
+        return ProcessBuilder(args).apply {
             // proot/PROOT_LOADER vars must live in the OUTER env so
             // the proot binary itself finds its loader. The tracee's
             // env is reset by `env -i` inside proot.
@@ -1213,9 +1227,6 @@ class ProotManager @Inject constructor(
             }
             redirectErrorStream(true)
         }.start()
-        val output = process.inputStream.bufferedReader().readText()
-        val exitCode = process.waitFor()
-        Pair(output, exitCode)
     }
 
     /**

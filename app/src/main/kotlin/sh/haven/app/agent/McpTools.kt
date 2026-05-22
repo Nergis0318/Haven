@@ -1271,6 +1271,37 @@ internal class McpTools(
             consentLevel = ConsentLevel.NEVER,
         ) { args -> getProotInstallLog(args) },
 
+        "run_in_proot" to ToolHandler(
+            description = "Run a shell command inside the ACTIVE distro's proot guest (the same rootfs the running desktop uses) and return its combined stdout+stderr. Distro-agnostic: invokes /bin/sh -lc in whatever distro is active (check inspect_proot.activeDistroId), so it works on Debian/Arch/Void, not just Alpine like open_local_shell. For long jobs (apt-get install, pip install) pass background:true to start it and return a jobId immediately, then poll by calling again with that jobId — the response carries the accumulated output and, once finished, the exitCode. Without background, the call blocks until the command exits (use only for quick commands). This is the agent's headless way to provision the guest (install packages, run kicad-cli ERC/DRC, etc.).",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("command", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Shell command to run via /bin/sh -lc in the active proot. Required unless polling via jobId.")
+                    })
+                    put("background", JSONObject().apply {
+                        put("type", "boolean")
+                        put("description", "If true, start the command and return a jobId immediately instead of blocking. Poll with that jobId. Default false.")
+                    })
+                    put("jobId", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Poll a previously started background job. When set, `command` is ignored and the current status + accumulated output are returned.")
+                    })
+                    put("maxOutputChars", JSONObject().apply {
+                        put("type", "integer")
+                        put("description", "Cap the returned output to its last N chars. Default 8000.")
+                    })
+                })
+            },
+            consentLevel = ConsentLevel.ONCE_PER_SESSION,
+            summarise = { args ->
+                val jid = args.optString("jobId").takeIf { it.isNotBlank() }
+                if (jid != null) "Let the agent read output of guest job $jid"
+                else "Let the agent run in the guest: ${args.optString("command").take(120)}"
+            },
+        ) { args -> runInProot(args) },
+
         "set_terminal_font_from_url" to ToolHandler(
             description = "Download a font from a URL, validate it, install it as Haven's terminal font (replacing any prior custom font), and return the saved path. The URL may point at a .ttf/.otf, or a .zip containing them (a Regular face is auto-extracted) — useful for repos like Maple/Nerd Fonts that ship only zips (#123, #177). WOFF/WOFF2 web fonts are rejected (Android can't render them). Requires the URL to be reachable from the device — use a tunneled URL (via add_port_forward LOCAL) to expose a workstation HTTP server back through the existing SSH session.",
             inputSchema = JSONObject().apply {
@@ -4523,6 +4554,14 @@ internal class McpTools(
      * one failing install from cancelling siblings. */
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** Live background `run_in_proot` jobs, keyed by jobId. */
+    private class ProotJob {
+        val output = StringBuilder()
+        @Volatile var running = true
+        @Volatile var exitCode: Int? = null
+    }
+    private val prootJobs = java.util.concurrent.ConcurrentHashMap<String, ProotJob>()
+
     private fun distroToJson(
         d: sh.haven.core.local.proot.Distro,
         installed: Boolean,
@@ -5087,6 +5126,68 @@ internal class McpTools(
             bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
         }
         return Triple(Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP), bmp.width, bmp.height)
+    }
+
+    private suspend fun runInProot(args: JSONObject): JSONObject {
+        val maxOut = args.optInt("maxOutputChars", 8000).coerceIn(200, 200_000)
+        fun tail(s: String) = if (s.length > maxOut) s.takeLast(maxOut) else s
+
+        // Poll an existing background job.
+        val pollId = args.optString("jobId").takeIf { it.isNotBlank() }
+        if (pollId != null) {
+            val job = prootJobs[pollId]
+                ?: throw McpError(-32602, "Unknown jobId: $pollId (it may have been lost on app restart)")
+            val out = synchronized(job.output) { job.output.toString() }
+            return JSONObject().apply {
+                put("jobId", pollId)
+                put("status", if (job.running) "running" else "done")
+                if (!job.running) put("exitCode", job.exitCode ?: -1)
+                put("output", tail(out))
+            }
+        }
+
+        val command = args.optString("command").takeIf { it.isNotBlank() }
+            ?: throw McpError(-32602, "command is required (or pass jobId to poll a background job)")
+
+        if (!prootManager.isRootfsInstalled) {
+            throw McpError(-32603, "Active distro '${prootManager.activeDistroId}' has no installed rootfs")
+        }
+
+        // Background mode: stream the process output into a job buffer and
+        // return immediately so long installs don't hold the request open.
+        if (args.optBoolean("background", false)) {
+            val jobId = java.util.UUID.randomUUID().toString()
+            val job = ProotJob()
+            prootJobs[jobId] = job
+            backgroundScope.launch {
+                try {
+                    val proc = prootManager.startCommandInProot(command)
+                    proc.inputStream.bufferedReader().forEachLine { line ->
+                        synchronized(job.output) { job.output.append(line).append('\n') }
+                    }
+                    job.exitCode = proc.waitFor()
+                } catch (e: Exception) {
+                    synchronized(job.output) { job.output.append("\n[run_in_proot error] ${e.message}\n") }
+                    job.exitCode = -1
+                } finally {
+                    job.running = false
+                }
+            }
+            return JSONObject().apply {
+                put("jobId", jobId)
+                put("status", "running")
+                put("activeDistroId", prootManager.activeDistroId)
+                put("poll", "run_in_proot with jobId=$jobId")
+            }
+        }
+
+        // Synchronous mode — blocks until the command exits.
+        val (out, code) = prootManager.runCommandInProot(command)
+        return JSONObject().apply {
+            put("activeDistroId", prootManager.activeDistroId)
+            put("exitCode", code)
+            put("output", tail(out))
+        }
     }
 
     private suspend fun getProotInstallLog(args: JSONObject): JSONObject {
