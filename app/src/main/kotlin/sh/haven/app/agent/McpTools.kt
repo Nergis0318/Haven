@@ -1276,6 +1276,57 @@ internal class McpTools(
             consentLevel = ConsentLevel.NEVER,
         ) { args -> viewFile(args) },
 
+        "read_guest_file" to ToolHandler(
+            description = "Read a file from the ACTIVE proot guest and return its bytes to the agent — text inline (UTF-8) or base64 for binary. This is the reliable agent⇄guest file channel (no hand-copying base64 over run_in_proot output). Reads are capped to maxBytes. For images/PDFs/schematics use view_file instead (renders to an inline picture).",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("path", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Absolute path to the file inside the active proot guest.")
+                    })
+                    put("asBase64", JSONObject().apply {
+                        put("type", "boolean")
+                        put("description", "Return base64 instead of UTF-8 text. Use for binary files. Default false.")
+                    })
+                    put("maxBytes", JSONObject().apply {
+                        put("type", "integer")
+                        put("description", "Read at most this many bytes. Default 262144 (256 KiB), clamped 1..8388608.")
+                    })
+                })
+                put("required", JSONArray().put("path"))
+            },
+            consentLevel = ConsentLevel.NEVER,
+        ) { args -> readGuestFile(args) },
+
+        "write_guest_file" to ToolHandler(
+            description = "Write a file into the ACTIVE proot guest. Supply either `content` (UTF-8 text) or `contentBase64` (binary). Parent directories are created by default. The reliable way to push agent-authored files (scripts, generators, configs) into the guest without a terminal heredoc.",
+            inputSchema = JSONObject().apply {
+                put("type", "object")
+                put("properties", JSONObject().apply {
+                    put("path", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Absolute destination path inside the active proot guest.")
+                    })
+                    put("content", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "UTF-8 text to write. Mutually exclusive with contentBase64.")
+                    })
+                    put("contentBase64", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "Base64-encoded bytes to write (for binary). Mutually exclusive with content.")
+                    })
+                    put("mkdirs", JSONObject().apply {
+                        put("type", "boolean")
+                        put("description", "Create parent directories if missing. Default true.")
+                    })
+                })
+                put("required", JSONArray().put("path"))
+            },
+            consentLevel = ConsentLevel.ONCE_PER_SESSION,
+            summarise = { args -> "Write a file to '${args.optString("path")}' in the guest" },
+        ) { args -> writeGuestFile(args) },
+
         "get_proot_install_log" to ToolHandler(
             description = "Return install-log events from the Room-backed ProotInstallLog table. Survives logcat rotation and app restarts. Filter by distroId and/or sinceMs (millis since epoch) to poll incrementally. Each event: id, timestamp, distroId, phase, deId?, exit?, ok, message?, logTail?.",
             inputSchema = JSONObject().apply {
@@ -5324,6 +5375,112 @@ internal class McpTools(
             }
         } finally {
             outFile.delete()
+            logFile.delete()
+        }
+    }
+
+    /**
+     * Read a guest file's bytes back to the agent. Stages a copy under
+     * `/tmp` (== app cacheDir) so we can read it app-side, capped to
+     * [maxBytes]. Returns UTF-8 text or base64. The reliable agent⇄guest
+     * read channel — no base64 hand-copying over run_in_proot output.
+     */
+    private suspend fun readGuestFile(args: JSONObject): JSONObject {
+        val path = args.optString("path").takeIf { it.isNotBlank() }
+            ?: throw McpError(-32602, "path is required (absolute guest path)")
+        if (!path.startsWith("/")) throw McpError(-32602, "path must be an absolute guest path")
+        val asBase64 = args.optBoolean("asBase64", false)
+        val maxBytes = args.optInt("maxBytes", 262144).coerceIn(1, 8 * 1024 * 1024)
+        if (!prootManager.isRootfsInstalled) {
+            throw McpError(-32603, "Active distro '${prootManager.activeDistroId}' has no installed rootfs")
+        }
+        val q = "'" + path.replace("'", "'\\''") + "'"
+        val staged = "haven-read-${System.currentTimeMillis()}"
+        val script = "rm -f /tmp/$staged; { [ -f $q ] && cp -- $q /tmp/$staged ; } > /tmp/$staged.log 2>&1; echo EXIT:\$?"
+        val (out, _) = prootManager.runCommandInProot(script)
+        val staging = File(context.cacheDir, staged)
+        val logFile = File(context.cacheDir, "$staged.log")
+        try {
+            if (!staging.exists()) {
+                val log = if (logFile.exists()) logFile.readText() else ""
+                throw McpError(-32603, "Could not read $path (missing or not a regular file?) (${log.take(300).trim()}; $out)")
+            }
+            val total = staging.length()
+            val bytes = staging.inputStream().use { ins ->
+                val buf = ByteArray(maxBytes)
+                var read = 0
+                while (read < maxBytes) {
+                    val n = ins.read(buf, read, maxBytes - read)
+                    if (n < 0) break
+                    read += n
+                }
+                buf.copyOf(read)
+            }
+            return JSONObject().apply {
+                put("path", path)
+                put("totalBytes", total)
+                put("returnedBytes", bytes.size)
+                put("truncated", total > bytes.size)
+                if (asBase64) {
+                    put("encoding", "base64")
+                    put("contentBase64", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                } else {
+                    put("encoding", "utf8")
+                    put("content", String(bytes, Charsets.UTF_8))
+                }
+            }
+        } finally {
+            staging.delete()
+            logFile.delete()
+        }
+    }
+
+    /**
+     * Write agent-supplied bytes into the guest. Stages the bytes under
+     * `/tmp` (== app cacheDir) then `cp`s them to [path] inside the proot,
+     * creating parent dirs by default. Accepts UTF-8 `content` or binary
+     * `contentBase64` (exactly one).
+     */
+    private suspend fun writeGuestFile(args: JSONObject): JSONObject {
+        val path = args.optString("path").takeIf { it.isNotBlank() }
+            ?: throw McpError(-32602, "path is required (absolute guest path)")
+        if (!path.startsWith("/")) throw McpError(-32602, "path must be an absolute guest path")
+        val hasText = args.has("content")
+        val hasB64 = args.has("contentBase64")
+        if (hasText == hasB64) throw McpError(-32602, "provide exactly one of content or contentBase64")
+        val mkdirs = args.optBoolean("mkdirs", true)
+        if (!prootManager.isRootfsInstalled) {
+            throw McpError(-32603, "Active distro '${prootManager.activeDistroId}' has no installed rootfs")
+        }
+        val bytes = if (hasB64) {
+            try {
+                Base64.decode(args.getString("contentBase64"), Base64.DEFAULT)
+            } catch (e: IllegalArgumentException) {
+                throw McpError(-32602, "contentBase64 is not valid base64: ${e.message}")
+            }
+        } else {
+            args.getString("content").toByteArray(Charsets.UTF_8)
+        }
+        val q = "'" + path.replace("'", "'\\''") + "'"
+        val staged = "haven-write-${System.currentTimeMillis()}"
+        val staging = File(context.cacheDir, staged)
+        val logFile = File(context.cacheDir, "$staged.log")
+        staging.writeBytes(bytes)
+        try {
+            val mk = if (mkdirs) "mkdir -p -- \"\$(dirname -- $q)\" && " else ""
+            val script = "{ $mk cp -- /tmp/$staged $q ; } > /tmp/$staged.log 2>&1; echo EXIT:\$?"
+            val (out, _) = prootManager.runCommandInProot(script)
+            if (!out.contains("EXIT:0")) {
+                val log = if (logFile.exists()) logFile.readText() else ""
+                throw McpError(-32603, "Write failed for $path (${log.take(300).trim()}; $out)")
+            }
+            return JSONObject().apply {
+                put("path", path)
+                put("bytesWritten", bytes.size)
+                put("status", "written")
+            }
+        } finally {
+            staging.delete()
             logFile.delete()
         }
     }
