@@ -209,6 +209,15 @@ class DefaultTunnelFactory @Inject constructor(
                 httpClient = httpClient,
             )
         }
+        TunnelConfigType.NETBIRD -> {
+            val parsed = NetBirdConfigBlob.parse(config.configText)
+            NetBirdTunnel(
+                managementUrl = parsed.managementUrl,
+                setupKey = parsed.setupKey,
+                stateDir = File(context.filesDir, "netbird-${config.id}"),
+                hostname = deriveHostname(config.label),
+            )
+        }
     }
 
     /**

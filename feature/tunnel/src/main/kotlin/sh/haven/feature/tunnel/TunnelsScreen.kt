@@ -157,6 +157,10 @@ fun TunnelsScreen(
                 viewModel.addTailscaleConfig(label, authKey, controlUrl)
                 showAddDialog = false
             },
+            onSubmitNetBird = { label, managementUrl, setupKey ->
+                viewModel.addNetBirdConfig(managementUrl, setupKey, label)
+                showAddDialog = false
+            },
         )
     }
 
@@ -278,12 +282,15 @@ private fun AddTunnelDialog(
     onDismiss: () -> Unit,
     onSubmitWireguard: (label: String, configText: String) -> Unit,
     onSubmitTailscale: (label: String, authKey: String, controlUrl: String) -> Unit,
+    onSubmitNetBird: (label: String, managementUrl: String, setupKey: String) -> Unit,
 ) {
     var type by remember { mutableStateOf(initialType) }
     var label by remember { mutableStateOf("") }
     var configText by remember { mutableStateOf("") }
     var authKey by remember { mutableStateOf("") }
     var controlUrl by remember { mutableStateOf("") }
+    var managementUrl by remember { mutableStateOf("") }
+    var setupKey by remember { mutableStateOf("") }
     val context = LocalContext.current
 
     // Use OpenDocument (SAF) rather than GetContent so the user can pick
@@ -434,6 +441,40 @@ private fun AddTunnelDialog(
                     )
                     androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                 }
+                TunnelConfigType.NETBIRD -> {
+                    Text(
+                        "Generate a setup key in the NetBird admin dashboard (Settings → Keys). Haven joins your NetBird network on first use and reuses the node state after that.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = managementUrl,
+                        onValueChange = { managementUrl = it },
+                        label = { Text("Management URL") },
+                        placeholder = {
+                            Text(
+                                "https://netbird.example.com",
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                    OutlinedTextField(
+                        value = setupKey,
+                        onValueChange = { setupKey = it },
+                        label = { Text("Setup key") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                    androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                }
                 TunnelConfigType.CLOUDFLARE_ACCESS -> {
                     // Retired from this dialog (GH #154). Filtered out of
                     // the chip row above, so this branch is unreachable in
@@ -452,6 +493,7 @@ private fun AddTunnelDialog(
                 val canSubmit = label.isNotBlank() && when (type) {
                     TunnelConfigType.WIREGUARD -> configText.isNotBlank()
                     TunnelConfigType.TAILSCALE -> authKey.isNotBlank()
+                    TunnelConfigType.NETBIRD -> managementUrl.isNotBlank() && setupKey.isNotBlank()
                     TunnelConfigType.CLOUDFLARE_ACCESS -> false
                 }
                 Button(
@@ -461,6 +503,8 @@ private fun AddTunnelDialog(
                                 onSubmitWireguard(label, configText)
                             TunnelConfigType.TAILSCALE ->
                                 onSubmitTailscale(label, authKey, controlUrl)
+                            TunnelConfigType.NETBIRD ->
+                                onSubmitNetBird(label, managementUrl, setupKey)
                             TunnelConfigType.CLOUDFLARE_ACCESS -> Unit
                         }
                     },
@@ -477,5 +521,6 @@ private fun tunnelTypeLabel(t: TunnelConfigType): String =
         TunnelConfigType.WIREGUARD -> "WireGuard"
         TunnelConfigType.TAILSCALE -> "Tailscale"
         TunnelConfigType.CLOUDFLARE_ACCESS -> "Cloudflare Tunnel"
+        TunnelConfigType.NETBIRD -> "NetBird"
     }
 

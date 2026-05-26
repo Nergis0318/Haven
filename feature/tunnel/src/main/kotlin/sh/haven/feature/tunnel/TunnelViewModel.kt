@@ -18,6 +18,7 @@ import sh.haven.core.data.db.entities.TunnelConfigType
 import sh.haven.core.data.repository.ConnectionLogRepository
 import sh.haven.core.data.repository.TunnelConfigRepository
 import sh.haven.core.tunnel.CloudflareAccessTunnel
+import sh.haven.core.tunnel.NetBirdConfigBlob
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
@@ -251,6 +252,26 @@ class TunnelViewModel @Inject constructor(
             controlURL = trimmedUrl,
         )
         save(label, TunnelConfigType.TAILSCALE, blob.encode())
+    }
+
+    fun addNetBirdConfig(managementUrl: String, setupKey: String, label: String) {
+        if (label.isBlank()) {
+            _error.value = "Label is required"
+            return
+        }
+        if (managementUrl.isBlank()) {
+            _error.value = "Management URL is required"
+            return
+        }
+        if (setupKey.isBlank()) {
+            _error.value = "Setup key is required"
+            return
+        }
+        val blob = NetBirdConfigBlob(
+            managementUrl = managementUrl.trim(),
+            setupKey = setupKey.trim(),
+        )
+        save(label, TunnelConfigType.NETBIRD, blob.encode())
     }
 
     private fun save(label: String, type: TunnelConfigType, bytes: ByteArray) {

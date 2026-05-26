@@ -56,6 +56,7 @@ enum class TunnelConfigType {
      *  `carrier/websocket.go` rather than guessed. Surfaced in the UI
      *  as "Cloudflare Tunnel". See GH #154. */
     CLOUDFLARE_ACCESS,
+    NETBIRD,
     ;
 
     companion object {

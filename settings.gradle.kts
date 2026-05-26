@@ -64,6 +64,8 @@ includeBuild("rdp-kotlin") {
 // Go bridge compiled via gomobile, single libgojni.so containing:
 //   - rcbridge: rclone for cloud storage backends
 //   - wgbridge: wireguard-go + gVisor netstack for per-app WireGuard (#102)
+//   - tsbridge: tsnet.Server for Tailscale overlay networks
+//   - nbbridge: NetBird embed client for overlay networks
 // Having both in one gomobile build avoids duplicate `go.Seq` runtime
 // classes and duplicate `libgojni.so` collisions.
 includeBuild("rclone-android") {
